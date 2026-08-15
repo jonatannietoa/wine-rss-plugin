@@ -47,6 +47,29 @@ export DEEPSEEK_API_KEY=sk-...
 python agent.py
 ```
 
+### Variables de entorno
+
+Las claves van en un `.env` en la raíz del repo, a partir de la plantilla:
+
+```bash
+cp .env.example .env   # y rellena lo que uses
+```
+
+| Variable | Para qué |
+|---|---|
+| `DEEPSEEK_API_KEY` | modelo de `agent.py`; sin ella corre en modo mock. También es el juez de `eval_session.py` si no fuerzas otro |
+| `OPENAI_API_KEY` | juez de deepeval por defecto (`eval/test_wine_agent.py`) |
+| `DEEPSEEK_MODEL_NAME` | modelo del juez DeepSeek; por defecto `deepseek-chat` |
+| `DEEPEVAL_TELEMETRY_OPT_OUT` | `1` para que deepeval no mande telemetría |
+
+Se carga siempre el `.env` de la raíz del repo, no el del directorio desde el que
+lances el comando, así que los scripts funcionan desde cualquier sitio. Una
+variable ya exportada en la shell gana sobre el fichero, y una variable vacía
+cuenta como ausente. `.env` está en `.gitignore`; `.env.example` no, así que ahí
+no van claves.
+
+El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del harness.
+
 Salida esperada (ejemplo):
 ```json
 {

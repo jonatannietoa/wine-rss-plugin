@@ -108,7 +108,9 @@ class ModelPlugin:
 
     def __init__(self, model: str = "deepseek-chat", mock: bool | None = None):
         self.model = model
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY")
+        # `or None`: con un .env, la variable puede existir pero estar vacía, y eso
+        # es "no hay clave", no "hay una clave que es la cadena vacía".
+        self.api_key = os.environ.get("DEEPSEEK_API_KEY") or None
         self.mock = mock if mock is not None else self.api_key is None
         if not self.mock:
             from openai import OpenAI  # DeepSeek expone API compatible con OpenAI

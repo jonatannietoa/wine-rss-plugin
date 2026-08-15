@@ -19,7 +19,10 @@ import json
 import sys
 from pathlib import Path
 
+from harness.env import cargar_env
 from harness.plugins import AgentLoop, ModelPlugin, RSSFeedTool, StockTool
+
+cargar_env()  # DEEPSEEK_API_KEY desde .env; sin ella, ModelPlugin va en modo mock
 
 STOCK_PATH = Path(__file__).parent / "stock.json"
 

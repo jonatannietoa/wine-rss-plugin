@@ -34,6 +34,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness.env import cargar_env  # noqa: E402
+
+cargar_env()  # la clave del juez desde .env
+
 STOCK_PATH = Path(__file__).resolve().parent.parent / "stock.json"
 
 RECOMMEND_TOOL = "wine_recommend"

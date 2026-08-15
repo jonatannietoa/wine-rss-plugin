@@ -27,7 +27,10 @@ from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness.env import cargar_env  # noqa: E402
 from harness.plugins import AgentLoop, ModelPlugin, NewsItem, StockTool  # noqa: E402
+
+cargar_env()  # OPENAI_API_KEY (juez) y DEEPSEEK_API_KEY (agente) desde .env
 
 STOCK_PATH = Path(__file__).resolve().parent.parent / "stock.json"
 
