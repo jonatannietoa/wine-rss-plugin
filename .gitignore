@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.deepeval/
+.deepeval_telemetry.txt
+.mypy_cache/
+.ruff_cache/
+
+# Node (dsh-plugin)
+node_modules/
+npm-debug.log*
+.npm/
+
+# Secretos y entorno
+.env
+.env.*
+!.env.example
+
+# Logs de sesión de dsh generados en local
+*.session.jsonl
+*.jsonl.zstd
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
