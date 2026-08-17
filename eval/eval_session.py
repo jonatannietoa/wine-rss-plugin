@@ -16,6 +16,9 @@ Uso:
     # ver qué casos salen del log sin gastar llamadas al juez
     ./.venv/bin/python eval/eval_session.py --dry-run session.jsonl
 
+    # ver exactamente qué se le pasa al juez antes de llamarlo
+    ./.venv/bin/python eval/eval_session.py --verbose session.jsonl
+
 El juez de GEval necesita una clave. OpenAI es solo el defecto de deepeval; con
 `DEEPSEEK_API_KEY` en el entorno se usa DeepSeek y no hace falta segunda cuenta:
 
@@ -43,9 +46,14 @@ STOCK_PATH = Path(__file__).resolve().parent.parent / "stock.json"
 
 RECOMMEND_TOOL = "wine_recommend"
 NEWS_TOOL = "wine_rss_latest"
+ARTICLE_TOOL = "wine_article_fetch"
 STOCK_TOOL = "wine_stock_list"
 
 THRESHOLD = 0.80
+
+# Turnos que no dicen nada por sí solos: el que dispara la recomendación suele ser
+# uno de estos, y tomarlo como la petición deja al juez sin saber qué se pidió.
+CONFIRMACIONES = {"si", "sí", "ok", "okay", "vale", "venga", "dale", "adelante", "yes", "y", "sip"}
 
 
 @dataclass
@@ -57,6 +65,7 @@ class Recomendacion:
     argumentos: dict[str, Any]
     peticion: str
     noticia: str
+    articulo: str
     catalogo: str
     rechazada: bool
     error: str = ""
@@ -67,21 +76,24 @@ class Recomendacion:
         return str(self.argumentos.get("product_id", ""))
 
     def actual_output(self) -> str:
-        """La propuesta del agente, en la misma forma que emite el agente Python."""
-        return json.dumps(
-            {
-                "noticia": {
-                    "titulo": self.argumentos.get("titulo"),
-                    "resumen": self.argumentos.get("resumen"),
-                    "enlace": self.argumentos.get("enlace"),
-                },
-                "recomendacion": {
-                    "product_id": self.argumentos.get("product_id"),
-                    "motivo": self.argumentos.get("motivo"),
-                },
-            },
-            ensure_ascii=False,
+        """La propuesta del agente, en prosa.
+
+        En texto plano y no como volcado JSON: un juez evalúa prosa con mucha más
+        fiabilidad que una cadena JSON escapada, y aquí lo que se puntúa son el
+        resumen y el motivo, no la estructura (de esa ya se encarga `wine_recommend`).
+        """
+        return "\n".join(
+            [
+                f"Titular: {self.argumentos.get('titulo', '')}",
+                f"Resumen: {self.argumentos.get('resumen', '')}",
+                f"Vino recomendado: {self.argumentos.get('product_id', '')}",
+                f"Motivo de la recomendación: {self.argumentos.get('motivo', '')}",
+            ]
         )
+
+    def contexto(self) -> list[str]:
+        """Lo que el agente tenía delante: artículo si lo leyó, noticia y catálogo."""
+        return [c for c in (self.articulo, self.noticia, self.catalogo) if c]
 
 
 def leer_eventos(path: Path) -> Iterator[dict[str, Any]]:
@@ -126,10 +138,9 @@ def texto_resultado(evento: dict[str, Any]) -> tuple[str, bool]:
 def extraer(path: Path, ids_validos: set[str]) -> list[Recomendacion]:
     """Reconstruye del log cada recomendación junto al contexto que la precedió."""
     peticion = ""
-    noticia = ""
-    catalogo = ""
+    contexto = {"noticia": "", "articulo": "", "catalogo": ""}
     turno = 0
-    pendientes: dict[str, tuple[str, dict[str, Any], int, str, str, str]] = {}
+    pendientes: dict[str, dict[str, Any]] = {}
     resultados: dict[str, tuple[str, bool]] = {}
     orden: list[str] = []
 
@@ -144,9 +155,9 @@ def extraer(path: Path, ids_validos: set[str]) -> list[Recomendacion]:
                 continue
             textos = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
             nuevo = " ".join(t for t in textos if t).strip()
-            # Se acumulan: el turno que dispara la recomendación suele ser un "sí" que
-            # no dice nada por sí solo, y lo que se pidió está en los turnos anteriores.
-            if nuevo:
+            # Se acumula lo que aporta y se descartan las confirmaciones sueltas: el
+            # turno que dispara la recomendación suele ser un "sí" que no dice nada.
+            if nuevo and nuevo.rstrip(".!").strip().lower() not in CONFIRMACIONES:
                 peticion = f"{peticion} / {nuevo}" if peticion else nuevo
         elif tipo == "turn/start":
             turno = data.get("turn", turno + 1)
@@ -157,24 +168,35 @@ def extraer(path: Path, ids_validos: set[str]) -> list[Recomendacion]:
                 argumentos = json.loads(data.get("arguments") or "{}")
             except json.JSONDecodeError:
                 argumentos = {}
+            pendientes[call_id] = {
+                "nombre": nombre,
+                "argumentos": argumentos,
+                "turno": data.get("turn", turno),
+                # Solo la recomendación necesita congelar el contexto del momento.
+                "peticion": peticion if nombre == RECOMMEND_TOOL else "",
+                "contexto": dict(contexto) if nombre == RECOMMEND_TOOL else {},
+            }
             if nombre == RECOMMEND_TOOL:
-                pendientes[call_id] = (nombre, argumentos, data.get("turn", turno), peticion, noticia, catalogo)
                 orden.append(call_id)
-            else:
-                pendientes[call_id] = (nombre, argumentos, data.get("turn", turno), "", "", "")
         elif tipo == "tool/result":
             call_id = data.get("message", {}).get("source", {}).get("callId", "")
             texto, es_error = texto_resultado(evento)
             resultados[call_id] = (texto, es_error)
-            nombre = pendientes.get(call_id, ("",))[0]
-            if nombre == NEWS_TOOL and not es_error:
-                noticia = texto
-            elif nombre == STOCK_TOOL and not es_error:
-                catalogo = texto
+            nombre = pendientes.get(call_id, {}).get("nombre", "")
+            if es_error:
+                continue
+            if nombre == NEWS_TOOL:
+                contexto["noticia"] = texto
+            elif nombre == ARTICLE_TOOL:
+                contexto["articulo"] = texto
+            elif nombre == STOCK_TOOL:
+                contexto["catalogo"] = texto
 
     recomendaciones = []
     for call_id in orden:
-        _, argumentos, turno_llamada, peticion_previa, noticia_previa, catalogo_previo = pendientes[call_id]
+        llamada = pendientes[call_id]
+        argumentos = llamada["argumentos"]
+        previo = llamada["contexto"]
         texto, es_error = resultados.get(call_id, ("(sin resultado en el log)", False))
         problemas = []
         product_id = str(argumentos.get("product_id", ""))
@@ -187,11 +209,12 @@ def extraer(path: Path, ids_validos: set[str]) -> list[Recomendacion]:
         recomendaciones.append(
             Recomendacion(
                 origen=path,
-                turno=turno_llamada,
+                turno=llamada["turno"],
                 argumentos=argumentos,
-                peticion=peticion_previa,
-                noticia=noticia_previa,
-                catalogo=catalogo_previo,
+                peticion=llamada["peticion"],
+                noticia=previo.get("noticia", ""),
+                articulo=previo.get("articulo", ""),
+                catalogo=previo.get("catalogo", ""),
                 rechazada=es_error,
                 error=texto if es_error else "",
                 problemas_estructura=problemas,
@@ -237,9 +260,11 @@ def construir_metricas(juez: Any = None) -> list[Any]:
         GEval(
             name="FidelidadDelResumen",
             criteria=(
-                "El contexto contiene la noticia tal y como la leyó el agente. Puntúa alto si el "
-                "resumen refleja fielmente esa noticia y no añade ningún dato que no esté en ella. "
-                "Puntúa bajo si inventa cifras, regiones, bodegas o hechos."
+                "El contexto contiene el material que el agente tenía delante: el cuerpo del artículo "
+                "si llegó a leerlo, el titular y el teaser del feed, y el catálogo de la tienda. "
+                "Puntúa alto si el resumen refleja fielmente ese material y no añade ningún dato que "
+                "no esté en él. Puntúa bajo si inventa cifras, regiones, bodegas o hechos, o si "
+                "extrapola del titular cosas que el material no dice."
             ),
             evaluation_params=params,
             threshold=THRESHOLD,
@@ -269,6 +294,11 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="extrae y comprueba la estructura sin llamar al juez de GEval",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="imprimir el input, la salida y el contexto exactos que se le pasan al juez",
     )
     parser.add_argument(
         "--juez",
@@ -314,6 +344,11 @@ def main() -> int:
             print(f"    error: {rec.error.splitlines()[0][:160]}")
         if not rec.noticia:
             print("    aviso: no se vio ninguna noticia antes de esta llamada")
+        if not rec.articulo:
+            print(
+                f"    aviso: no se llamó a {ARTICLE_TOOL}, así que el resumen sale solo del teaser"
+                " del feed y la fidelidad se juzgará contra ese material"
+            )
 
     a_evaluar = [r for r in recomendaciones if args.incluir_rechazadas or not r.rechazada]
     rechazadas = len(recomendaciones) - len([r for r in recomendaciones if not r.rechazada])
@@ -335,10 +370,20 @@ def main() -> int:
         LLMTestCase(
             input=rec.peticion or "Lee una noticia y recomienda un vino del stock.",
             actual_output=rec.actual_output(),
-            retrieval_context=[c for c in (rec.noticia, rec.catalogo) if c],
+            retrieval_context=rec.contexto(),
         )
         for rec in a_evaluar
     ]
+
+    if args.verbose:
+        for rec, caso in zip(a_evaluar, casos):
+            print("=" * 72)
+            print(f"turno {rec.turno} | {rec.product_id}")
+            print(f"--- input ---\n{caso.input}")
+            print(f"--- actual_output ---\n{caso.actual_output}")
+            for i, trozo in enumerate(caso.retrieval_context):
+                print(f"--- retrieval_context[{i}] ({len(trozo)} chars) ---\n{trozo}")
+        print("=" * 72)
 
     juez = construir_juez(args.juez, args.modelo_juez)
     nombre_juez = juez.get_model_name() if juez is not None else "el defecto de deepeval"

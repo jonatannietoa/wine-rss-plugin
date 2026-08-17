@@ -11,6 +11,9 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
  * que el loop del harness se autocorrija en lugar de reintentar por su cuenta.
  * `ModelPlugin` desaparece: el modelo es el del propio harness.
  *
+ * Las fuentes de noticias no están incrustadas aquí: se declaran en la fila del
+ * preset, que es donde dsh quiere la configuración.
+ *
  * @module dsh-plugin-wine-agent
  */
 
@@ -19,20 +22,36 @@ export const inject = ['tools']
 
 export const Config = z.object({
   stockPath: z.string().required(),
-  feedUrl: z.string().default('https://www.wine-searcher.com/rss-feed/dept/all'),
+  feeds: z
+    .array(
+      z.object({
+        id: z.string().required(),
+        nombre: z.string(),
+        url: z.string().required(),
+      }),
+    )
+    .default([
+      {
+        id: 'wine-searcher',
+        nombre: 'Wine-Searcher',
+        url: 'https://www.wine-searcher.com/rss-feed/dept/all',
+      },
+    ]),
   timeoutMs: z.number().default(15000),
   maxItems: z.number().default(10),
   minResumenChars: z.number().default(20),
+  articleMaxChars: z.number().default(6000),
 })
 
 const USER_AGENT = 'Mozilla/5.0 (compatible; dsh-plugin-wine-agent/0.1)'
+const ACCEPT_FEED = 'application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8'
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 
 /**
- * Convierte el contenido de un nodo RSS en texto plano legible: quita CDATA, marcado
- * y entidades, y colapsa los espacios. Wine-Searcher publica `description` con HTML.
- * @param raw - el contenido crudo del nodo.
+ * Convierte marcado en texto plano legible: quita CDATA, etiquetas y entidades, y
+ * colapsa los espacios. Lo usan tanto el lector de feeds como el de artículos.
+ * @param raw - el contenido crudo.
  * @returns el texto plano ya normalizado.
  */
 function toText(raw) {
@@ -47,8 +66,8 @@ function toText(raw) {
 }
 
 /**
- * Lee el primer nodo presente de entre varios nombres dentro de un bloque `<item>`.
- * @param block - el XML del item.
+ * Lee el primer nodo presente de entre varios nombres dentro de un bloque.
+ * @param block - el XML de la entrada.
  * @param names - nombres de nodo por orden de preferencia.
  * @returns el texto del primero que exista, o cadena vacía.
  */
@@ -64,25 +83,111 @@ function readTag(block, names) {
 }
 
 /**
- * Extrae las noticias de un feed RSS 2.0. Deliberadamente tolerante: un feed sin
- * `<item>` devuelve una lista vacía y quien llama decide qué hacer.
- * @param xml - el cuerpo del feed.
- * @param limit - cuántas noticias conservar, de más reciente a más antigua.
- * @returns las noticias ya normalizadas.
+ * Saca el enlace de una entrada, cubriendo las dos convenciones: RSS lo pone como
+ * contenido de `<link>` y Atom como atributo `href`.
+ * @param block - el XML de la entrada.
+ * @returns la URL, o cadena vacía.
  */
-function parseFeed(xml, limit) {
+function readLink(block) {
+  const atom = block.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*>/i)
+  if (atom) return toText(atom[1])
+  return readTag(block, ['link', 'guid', 'id'])
+}
+
+/**
+ * Extrae las noticias de un feed RSS 2.0 o Atom. Deliberadamente tolerante: un feed
+ * sin entradas devuelve una lista vacía y quien llama decide qué hacer.
+ * @param xml - el cuerpo del feed.
+ * @returns las noticias ya normalizadas, en el orden en que venían.
+ */
+function parseFeed(xml) {
   const items = []
-  for (const match of xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)) {
-    if (items.length >= limit) break
-    const block = match[1]
+  for (const match of xml.matchAll(/<(item|entry)\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
+    const block = match[2]
     items.push({
       titulo: readTag(block, ['title']),
-      resumen: readTag(block, ['description', 'summary', 'content:encoded']),
-      enlace: readTag(block, ['link', 'guid']),
-      publicado: readTag(block, ['pubDate', 'published', 'updated']),
+      resumen: readTag(block, ['description', 'summary', 'content:encoded', 'content']),
+      enlace: readLink(block),
+      publicado: readTag(block, ['pubDate', 'published', 'updated', 'dc:date']),
     })
   }
   return items
+}
+
+/**
+ * Ordena de más reciente a más antigua. Una fecha ilegible se va al final en vez de
+ * envenenar la comparación.
+ * @param item - la noticia.
+ * @returns el instante de publicación en milisegundos, o 0.
+ */
+function instante(item) {
+  const ms = Date.parse(item.publicado)
+  return Number.isNaN(ms) ? 0 : ms
+}
+
+/**
+ * Descarga y parsea un feed. No lanza: el fallo de una fuente se devuelve como dato
+ * para que una fuente caída no tumbe la llamada entera.
+ * @param feed - la fuente configurada.
+ * @param config - la configuración del plugin.
+ * @param signal - la señal de cancelación de la ejecución.
+ * @returns las noticias de esa fuente, o el error que impidió leerla.
+ */
+async function leerFeed(feed, config, signal) {
+  try {
+    const response = await fetch(feed.url, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
+      headers: { 'user-agent': USER_AGENT, accept: ACCEPT_FEED },
+    })
+    if (!response.ok) {
+      return { feed, items: [], error: `respondió ${response.status} ${response.statusText}` }
+    }
+    const items = parseFeed(await response.text()).map((item) => ({ ...item, fuente: feed.id }))
+    return { feed, items, error: '' }
+  } catch (error) {
+    if (signal.aborted) throw error
+    return { feed, items: [], error: error.message }
+  }
+}
+
+/**
+ * Saca el cuerpo del artículo de una página, probando de lo mejor a lo peor:
+ * el `articleBody` de JSON-LD (schema.org, lo publican muchos medios) y, si no,
+ * la `og:description`.
+ * @param html - el HTML de la página.
+ * @returns `{ titulo, cuerpo, origen }`, o `null` si no hay nada aprovechable.
+ */
+function extraerArticulo(html) {
+  for (const bloque of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    let datos
+    try {
+      datos = JSON.parse(bloque[1])
+    } catch {
+      continue
+    }
+    const raiz = Array.isArray(datos) ? datos : [datos]
+    const nodos = raiz.flatMap((n) => (n && Array.isArray(n['@graph']) ? n['@graph'] : [n]))
+    for (const nodo of nodos) {
+      if (nodo && typeof nodo === 'object' && typeof nodo.articleBody === 'string' && nodo.articleBody.trim()) {
+        return {
+          titulo: toText(String(nodo.headline ?? nodo.name ?? '')),
+          cuerpo: toText(nodo.articleBody),
+          origen: 'articulo',
+        }
+      }
+    }
+  }
+
+  const og = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["']/i)
+  if (og && og[1].trim()) {
+    const titulo = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']/i)
+    return {
+      titulo: toText(titulo ? titulo[1] : ''),
+      cuerpo: toText(og[1]),
+      origen: 'descripcion',
+    }
+  }
+  return null
 }
 
 /**
@@ -119,22 +224,33 @@ const WINE_SCHEMA = {
 }
 
 /**
- * Registra las tres herramientas del agente de vinos en el registro `tools`.
- * Ninguna publica servicios, así que las filas no necesitan realm aislado.
+ * Registra las herramientas del agente de vinos en el registro `tools`.
+ * Ninguna publica servicios, así que la fila va suelta y sin realm aislado.
  * @param ctx - el contexto Cordis de la fila.
  * @param config - la configuración validada por {@link Config}.
  */
 export function apply(ctx, config) {
+  const ids = config.feeds.map((f) => f.id)
+  const catalogoFuentes = config.feeds.map((f) => `${f.id}${f.nombre ? ` (${f.nombre})` : ''}`).join(', ')
+
   ctx.tools.register(defineTool({
     name: 'wine_rss_latest',
     description:
-      'Devuelve las últimas noticias del sector del vino publicadas en el feed RSS de Wine-Searcher, '
-      + 'de la más reciente a la más antigua. Úsala como punto de partida cuando haya que comentar la '
-      + 'actualidad del vino o recomendar a partir de una noticia. Copia el enlace tal cual: es la fuente.',
+      'Devuelve las últimas noticias del sector del vino, de la más reciente a la más antigua, leídas de '
+      + `las fuentes configuradas en la tienda: ${catalogoFuentes}. Úsala como punto de partida cuando haya `
+      + 'que comentar la actualidad del vino o recomendar a partir de una noticia. Copia el enlace tal cual: '
+      + 'es la fuente, y lo necesita wine_article_fetch para leer el artículo entero.',
     parameters: {
       n: {
         type: 'integer',
         description: `Cuántas noticias devolver, de 1 a ${config.maxItems}. Por defecto 1 (la más reciente).`,
+      },
+      fuente: {
+        type: 'string',
+        description:
+          `De qué fuente leer. Valores válidos: ${ids.join(', ')}. `
+          + 'Omítelo para mezclar todas las fuentes ordenadas por fecha, que es lo normal; '
+          + 'úsalo solo si el usuario pide una fuente concreta.',
       },
     },
     output: {
@@ -153,24 +269,49 @@ export function apply(ctx, config) {
                 resumen: { type: 'string', required: true },
                 enlace: { type: 'string', required: true },
                 publicado: { type: 'string', required: true },
+                fuente: { type: 'string', required: true },
+              },
+            },
+          },
+          fuentesConsultadas: { type: 'array', required: true, items: { type: 'string' } },
+          fuentesFallidas: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                fuente: { type: 'string', required: true },
+                error: { type: 'string', required: true },
               },
             },
           },
         },
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: value.items.length === 0
-          ? 'El feed no devolvió ninguna noticia.'
-          : value.items
-            .map((item, index) => [
-              `${index + 1}. ${item.titulo}`,
-              item.publicado && `   Publicado: ${item.publicado}`,
-              item.enlace && `   Enlace: ${item.enlace}`,
-              item.resumen && `   ${item.resumen}`,
-            ].filter(Boolean).join('\n'))
-            .join('\n\n'),
-      }],
+      render: (_args, value) => {
+        const partes = []
+        if (value.items.length === 0) {
+          partes.push('Ninguna de las fuentes consultadas devolvió noticias.')
+        } else {
+          partes.push(
+            value.items
+              .map((item, index) => [
+                `${index + 1}. ${item.titulo}  [${item.fuente}]`,
+                item.publicado && `   Publicado: ${item.publicado}`,
+                item.enlace && `   Enlace: ${item.enlace}`,
+                item.resumen && `   ${item.resumen}`,
+              ].filter(Boolean).join('\n'))
+              .join('\n\n'),
+          )
+        }
+        if (value.fuentesFallidas.length > 0) {
+          partes.push(
+            'Fuentes que no se pudieron leer: '
+            + value.fuentesFallidas.map((f) => `${f.fuente} (${f.error})`).join('; '),
+          )
+        }
+        return [{ type: 'text', text: partes.join('\n\n') }]
+      },
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -178,27 +319,117 @@ export function apply(ctx, config) {
       if (!Number.isInteger(requested) || requested < 1 || requested > config.maxItems) {
         throw new Error(`n debe ser un entero entre 1 y ${config.maxItems} (recibido ${args.n})`)
       }
-      const signal = AbortSignal.any([exec.signal, AbortSignal.timeout(config.timeoutMs)])
-      let response
-      try {
-        response = await fetch(config.feedUrl, {
-          signal,
-          headers: { 'user-agent': USER_AGENT, accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8' },
-        })
-      } catch (error) {
-        if (exec.signal.aborted) throw error
-        throw new Error(`no se pudo consultar el feed ${config.feedUrl}: ${error.message}`)
+
+      let seleccionadas = config.feeds
+      if (args.fuente) {
+        const buscada = args.fuente.trim().toLowerCase()
+        seleccionadas = config.feeds.filter((f) => f.id.toLowerCase() === buscada)
+        if (seleccionadas.length === 0) {
+          throw new Error(`fuente "${args.fuente}" no configurada; las válidas son: ${ids.join(', ')}`)
+        }
       }
-      if (!response.ok) {
-        throw new Error(`el feed ${config.feedUrl} respondió ${response.status} ${response.statusText}`)
+
+      const resultados = await Promise.all(seleccionadas.map((feed) => leerFeed(feed, config, exec.signal)))
+      const fallidas = resultados
+        .filter((r) => r.error)
+        .map((r) => ({ fuente: r.feed.id, error: r.error }))
+      if (fallidas.length === resultados.length) {
+        throw new Error(
+          'no se pudo leer ninguna fuente: '
+          + fallidas.map((f) => `${f.fuente} (${f.error})`).join('; '),
+        )
       }
-      return { items: parseFeed(await response.text(), requested) }
+
+      const items = resultados
+        .flatMap((r) => r.items)
+        .sort((a, b) => instante(b) - instante(a))
+        .slice(0, requested)
+
+      return {
+        items,
+        fuentesConsultadas: seleccionadas.map((f) => f.id),
+        fuentesFallidas: fallidas,
+      }
     },
     presentCall: (args) => ({
       card: 'generic',
-      title: `Noticias de Wine-Searcher (${args.n ?? 1})`,
+      title: `Noticias de vino (${args.n ?? 1}${args.fuente ? `, ${args.fuente}` : ''})`,
       kind: 'other',
     }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'wine_article_fetch',
+    description:
+      'Descarga el artículo completo de una noticia a partir de su enlace y lo devuelve como texto. '
+      + 'Llámala después de wine_rss_latest y ANTES de resumir: el feed solo trae un titular y una frase, '
+      + 'y resumir a partir de eso obliga a inventar. Mira el campo `fuente` de la respuesta para saber '
+      + 'con cuánto material estás trabajando de verdad.',
+    parameters: {
+      url: {
+        type: 'string',
+        required: true,
+        description: 'El enlace de la noticia, tal cual lo dio wine_rss_latest.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          titulo: { type: 'string', required: true },
+          cuerpo: { type: 'string', required: true },
+          caracteres: { type: 'integer', required: true },
+          truncado: { type: 'boolean', required: true },
+          fuente: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => {
+        if (value.fuente === 'feed') {
+          return [{
+            type: 'text',
+            text: 'No se pudo extraer el artículo de esa página. Quédate con el titular y el resumen del '
+              + 'feed, dilo explícitamente y no afirmes nada que no esté ahí.',
+          }]
+        }
+        const cabecera = value.fuente === 'articulo'
+          ? `Artículo completo (${value.caracteres} caracteres${value.truncado ? ', recortado' : ''}):`
+          : `Solo se pudo recuperar la descripción de la página (${value.caracteres} caracteres). `
+            + 'No hay cuerpo del artículo: no afirmes nada que no esté aquí.'
+        return [{ type: 'text', text: `${value.titulo}\n\n${cabecera}\n\n${value.cuerpo}` }]
+      },
+    },
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const url = args.url.trim()
+      if (!/^https?:\/\//i.test(url)) throw new Error(`url debe ser http(s) (recibido "${args.url}")`)
+
+      const vacio = { titulo: '', cuerpo: '', caracteres: 0, truncado: false, fuente: 'feed' }
+      let response
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.any([exec.signal, AbortSignal.timeout(config.timeoutMs)]),
+          headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml' },
+        })
+      } catch (error) {
+        if (exec.signal.aborted) throw error
+        return vacio
+      }
+      if (!response.ok) return vacio
+
+      const extraido = extraerArticulo(await response.text())
+      if (!extraido) return vacio
+
+      const truncado = extraido.cuerpo.length > config.articleMaxChars
+      return {
+        titulo: extraido.titulo,
+        cuerpo: truncado ? extraido.cuerpo.slice(0, config.articleMaxChars) : extraido.cuerpo,
+        caracteres: truncado ? config.articleMaxChars : extraido.cuerpo.length,
+        truncado,
+        fuente: extraido.origen,
+      }
+    },
+    presentCall: (args) => ({ card: 'generic', title: 'Leer el artículo', kind: 'other', rawInput: args }),
   }))
 
   ctx.tools.register(defineTool({
@@ -245,7 +476,9 @@ export function apply(ctx, config) {
       resumen: {
         type: 'string',
         required: true,
-        description: 'Resumen de la noticia en 2-3 frases en español, escrito por ti, no copiado del feed.',
+        description:
+          'Resumen de la noticia en 2-3 frases en español, escrito por ti a partir del cuerpo que '
+          + 'devolvió wine_article_fetch. No afirmes nada que no esté en el material que tienes.',
       },
       enlace: { type: 'string', required: true, description: 'El enlace de la noticia, tal cual lo dio wine_rss_latest.' },
       product_id: {

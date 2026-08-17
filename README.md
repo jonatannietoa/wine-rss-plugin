@@ -31,7 +31,7 @@ wine_agent/
 │   └── test_wine_agent.py # tests deepeval (pass / fail / accuracy>0.80 / retry)
 └── dsh-plugin/
     ├── package.json       # paquete del plugin nativo de dsh
-    └── lib/index.js       # herramientas wine_rss_latest / wine_stock_list / wine_recommend
+    └── lib/index.js       # wine_rss_latest / wine_article_fetch / wine_stock_list / wine_recommend
 ```
 
 ## Uso
@@ -93,8 +93,9 @@ Los 4 casos pedidos están en `eval/test_wine_agent.py`:
 
 Esos 4 casos evalúan el agente **Python**. Para evaluar lo que de verdad corrió
 dentro de dsh está `eval/eval_session.py`, que lee el log de una sesión, extrae
-cada llamada a `wine_recommend` y la puntúa contra la noticia y el catálogo que el
-agente tenía delante en ese momento:
+cada llamada a `wine_recommend` y la puntúa contra el material que el agente tenía
+delante en ese momento —el artículo si llegó a leerlo, el teaser del feed y el
+catálogo:
 
 ```bash
 # una sesión exportada con el botón "Session log" de la UI
@@ -105,6 +106,9 @@ agente tenía delante en ese momento:
 
 # ver los casos que salen del log sin gastar llamadas al juez
 ./.venv/bin/python eval/eval_session.py --dry-run session.jsonl
+
+# ver exactamente qué se le pasa al juez antes de llamarlo
+./.venv/bin/python eval/eval_session.py --verbose session.jsonl
 ```
 
 Comprueba gratis la estructura (que el `product_id` exista en `stock.json`, que
@@ -157,6 +161,7 @@ actualizar ese `SKILL.md`.
 | Python | dsh |
 | --- | --- |
 | `RSSFeedTool` | herramienta `wine_rss_latest` |
+| — | herramienta `wine_article_fetch`, que no tiene equivalente en Python |
 | `StockTool` | herramienta `wine_stock_list` |
 | validación de `AgentLoop._validate` | herramienta `wine_recommend`, que rechaza la llamada |
 | reintento de `AgentLoop` | el propio loop del agente, que se autocorrige ante el rechazo |
@@ -183,6 +188,40 @@ El preset vive en `~/.dsh/.agent-presets/wine-agent/` (`agent.cordis.yml` +
 `preset.yml`) y se elige por sesión desde el selector de presets de dsh. Su fila
 apunta al `stock.json` de este repo por ruta absoluta, así que el catálogo no
 depende del directorio de trabajo de la sesión.
+
+### Fuentes de noticias
+
+No hay URLs en el código: las fuentes se declaran en la fila del plugin, que es donde
+dsh quiere la configuración («no hay un lenguaje de configuración aparte: cambiar lo
+que un agente puede hacer es cambiar las filas que lo componen»).
+
+```yaml
+- id: wine-tools
+  name: dsh-plugin-wine-agent
+  config:
+    stockPath: /ruta/al/stock.json
+    feeds:
+      - id: wine-searcher
+        nombre: Wine-Searcher
+        url: https://www.wine-searcher.com/rss-feed/dept/all
+      - id: decanter
+        nombre: Decanter
+        url: https://www.decanter.com/feed
+```
+
+El `id` es lo que el modelo pasa en el parámetro `fuente` de `wine_rss_latest`, y los
+ids configurados se interpolan en la descripción del parámetro, así que el agente ve
+qué fuentes hay sin gastar una llamada. Sin `fuente` se leen todas en paralelo y se
+mezclan por fecha; una fuente caída no tumba la llamada, se reporta y se sigue con las
+demás. Se acepta RSS 2.0 y Atom. Los cambios entran al abrir sesión nueva, con dsh
+reiniciado.
+
+`wine_article_fetch` descarga el artículo enlazado porque el feed solo trae un titular
+y una frase, y resumir desde ahí obliga a inventar. Extrae por orden: el `articleBody`
+de JSON-LD (schema.org, lo publican muchos medios), luego `og:description`, y si no hay
+nada devuelve `fuente: "feed"` sin lanzar error, para que el agente lo diga en vez de
+rellenar huecos. `articleMaxChars` (6000 por defecto) mantiene el recorte por debajo
+del umbral del podador del preset.
 
 Si actualizas dsh, vuelve a fijar `@deepseek-ai/dsh-tools` en `dsh-plugin/package.json`
 a la versión nueva y reinstala.
