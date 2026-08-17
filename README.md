@@ -184,10 +184,26 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 El aviso `declares no dsh.bundle` es lo esperado: el plugin no es una capa del
 perfil (plano host), lo monta el preset de agente (plano agente).
 
-El preset vive en `~/.dsh/.agent-presets/wine-agent/` (`agent.cordis.yml` +
-`preset.yml`) y se elige por sesión desde el selector de presets de dsh. Su fila
-apunta al `stock.json` de este repo por ruta absoluta, así que el catálogo no
-depende del directorio de trabajo de la sesión.
+El preset está versionado en el repo en `agent-presets/wine-agent/` (`agent.cordis.yml` +
+`preset.yml`) y se despliega copiándolo a `~/.dsh/.agent-presets/wine-agent/`:
+
+```bash
+mkdir -p ~/.dsh/.agent-presets/wine-agent
+cp agent-presets/wine-agent/preset.yml agent-presets/wine-agent/agent.cordis.yml \
+   ~/.dsh/.agent-presets/wine-agent/
+```
+
+Se elige por sesión desde el selector de presets de dsh. Su fila apunta al
+`stock.json` de este repo por ruta absoluta, así que el catálogo no depende del
+directorio de trabajo de la sesión; ajusta `stockPath` a la ruta de la máquina.
+
+La versión sigue **semver (x.y.z)** y su fuente canónica es `version` en
+`dsh-plugin/package.json`. El `name` del preset y la línea de la persona
+(`Versión del código …: x.y.z`) deben coincidir con ella; se suben a mano en
+cada release y luego se redeploya y se reinicia dsh. La versión va en la persona
+(no solo en el `name`) porque la persona se congela por sesión en el system
+prompt, mientras que el `name` es una etiqueta global que se re-lee para todas
+las sesiones.
 
 ### Fuentes de noticias
 
