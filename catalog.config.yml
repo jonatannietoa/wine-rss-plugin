@@ -237,10 +237,36 @@ description:
   # escribe nada. Pasó de verdad, con `deepseek-v4-flash` y `reasoningEffort:
   # high` en la sesión: ocho borradores seguidos con cero caracteres de texto.
   # Con cientos de productos es además el mayor ahorro de tiempo de la etapa.
-  reasoningEffort: low
-  # Techo de tokens de la respuesta. La ficha entera ronda los 500, así que esto
-  # es un seguro contra una respuesta desbocada, no un límite que deba apretar.
-  maxTokens: 4000
+  # Valores que acepta el adaptador de DeepSeek, y dependen de su versión:
+  #   siempre:      off, high, max
+  #   desde rc.8:   + low
+  #
+  # NO uses `low`. La versión del adaptador no se puede fijar: `dsh` declara sus
+  # dependencias con rangos (`^0.1.0-rc.6`), así que npm resuelve
+  # `dsh-llm-deepseek` a lo más nuevo que encaje, y en dos cachés de npx de esta
+  # misma máquina salieron rc.6 y rc.8. Con `low` la carga funciona o revienta con
+  # `UNSUPPORTED_REASONING_EFFORT` según qué resolviera npm el día que se instaló.
+  #
+  # `off` apaga el razonamiento del todo (`thinking: disabled` en el cable); los
+  # demás lo dejan encendido con más o menos empeño, y ese razonamiento consume
+  # del `maxTokens` de abajo.
+  #
+  # Medido, en segundos por llamada al modelo:
+  #   low   21,4 · 27,0 · 32,4   (media 26,9)
+  #   high  54,9 · 33,9 · 84,9   (media 57,9)
+  #   off   ← lo que mide la próxima carga
+  #
+  # Está en `off` para cerrar esa comparación. Si las fichas salen planas o si
+  # suben los rechazos de longitud (`entradaLarga`, `largo:seoTitle`,
+  # `bulletLargo`: contar caracteres es donde el razonamiento ayuda), vuelve a
+  # `high` y se queda ahí. Es esta línea, y nada se publica sin revisar.
+  reasoningEffort: off
+  # Techo de tokens de la respuesta. Holgado a propósito: el razonamiento cuenta
+  # contra ESTE mismo presupuesto, así que un tope justo para el texto (4000)
+  # deja al modelo sin sitio para escribir y devuelve la respuesta vacía. Pasó:
+  # 7 fichas perdidas por eso. La ficha son ~500 tokens; el resto es para que el
+  # razonamiento quepa sin comerse el sitio del texto.
+  maxTokens: 16000
   # Sin valor: manda el proveedor. Bájalo si las fichas salen demasiado dispares.
   # temperature: 0.7
 
@@ -253,6 +279,14 @@ description:
   # detecte con tres llamadas y no con un lote entero. Súbelo si el proveedor
   # aguanta; bájalo a 1 si empiezan los errores de rate limit.
   concurrency: 4
+  # La sonda: el primer producto del lote se redacta SOLO, para que un modelo mal
+  # configurado cueste tres llamadas en vez de un lote entero. Pero es una ronda
+  # secuencial completa: en un lote de cuatro medido, un 33 % del tiempo de pared.
+  #   auto   (recomendado) la salta si ya hay una ficha escrita por ESTE modelo,
+  #          que es prueba de que la configuración funciona
+  #   always la hace siempre; lo más prudente y lo más lento
+  #   never  nunca; el lote entero en paralelo desde el primero
+  probeFirst: auto
   # Techo de productos por llamada, para que un `limit` grande no se convierta en
   # una factura sorpresa.
   maxPerCall: 50

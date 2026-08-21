@@ -89,7 +89,7 @@ if [ "$DESTINO" = "$PLUGIN" ]; then
   ok "ya enlazado (no hace falta reinstalar: es un symlink al repo)"
 else
   aviso "sin enlazar o apuntando a otro sitio; lo instalo"
-  (cd "$REPO" && npx "$DSH" plugin --profile "$PERFIL" add "$PLUGIN")
+  (cd "$REPO" && npx --yes "$DSH" plugin --profile "$PERFIL" add "$PLUGIN")
   ok "instalado"
 fi
 
@@ -129,6 +129,28 @@ ENTRADA="$ENLACE/lib/index.js" CONFIG="$REPO/catalog.config.yml" node "$SMOKE" |
 rm -f "$SMOKE"
 ok "las herramientas responden cargadas desde el perfil"
 
+# ── 6b. qué esfuerzos de razonamiento acepta el adaptador resuelto ──────────
+# La versión del adaptador NO se puede fijar: `dsh` declara sus dependencias con
+# rangos, así que npm resuelve `dsh-llm-deepseek` a lo más nuevo que encaje. En
+# dos cachés de npx de esta máquina salieron rc.6 y rc.8, y aceptan esfuerzos
+# distintos. Si la configuración pide uno que el adaptador no conoce, la carga de
+# descripciones revienta en mitad del lote: mejor saberlo aquí.
+paso "Esfuerzo de razonamiento"
+ADAPTADOR="$(ls -dt "$HOME"/.npm/_npx/*/node_modules/@deepseek-ai/dsh-llm-deepseek 2>/dev/null | head -1)"
+if [ -n "$ADAPTADOR" ]; then
+  V_ADAPTADOR="$(node -p "require('$ADAPTADOR/package.json').version" 2>/dev/null || echo '?')"
+  ACEPTA="$(grep -oE 'effort === "[a-z]+"' "$ADAPTADOR/lib/index.js" 2>/dev/null | sed 's/.*"\(.*\)"/\1/' | sort -u | tr '\n' ' ')"
+  PEDIDO="$(sed -n 's/^  reasoningEffort: *\([a-z]*\).*/\1/p' "$REPO/catalog.config.yml" | head -1)"
+  printf '   adaptador %s acepta: %s\n' "$V_ADAPTADOR" "${ACEPTA:-(no se pudo leer)}"
+  if [ -n "$PEDIDO" ] && [ -n "$ACEPTA" ] && ! printf '%s' "$ACEPTA" | grep -qw "$PEDIDO"; then
+    morir "la configuración pide reasoningEffort \"$PEDIDO\" y este adaptador no lo acepta.
+  Cambia \`description.reasoningEffort\` en catalog.config.yml a uno de: $ACEPTA"
+  fi
+  ok "la configuración pide \"${PEDIDO:-?}\", y lo acepta"
+else
+  aviso "no se encontró el adaptador de DeepSeek en la caché de npx; se comprobará al usarlo"
+fi
+
 # ── 7. parar lo que hubiera ─────────────────────────────────────────────────
 # Solo si vamos a arrancar: con -n el usuario espera seguir con el dsh que tenía.
 if [ "$ARRANCAR" = 0 ]; then
@@ -164,4 +186,4 @@ printf '   Se para con Ctrl-C. Abre SESIÓN NUEVA: una ya abierta se queda con e
 cd "$REPO"
 # `${EXTRA[@]+...}`: en el bash 3.2 de macOS, expandir un array vacío bajo
 # `set -u` es un error de variable sin definir.
-exec npx "$DSH" web ${EXTRA[@]+"${EXTRA[@]}"}
+exec npx --yes "$DSH" web ${EXTRA[@]+"${EXTRA[@]}"}

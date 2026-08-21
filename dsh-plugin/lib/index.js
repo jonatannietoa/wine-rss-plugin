@@ -201,10 +201,12 @@ function yaUsados(items, excluir = new Set()) {
  * @param signal - la señal de cancelación del tool.
  * @param problemasIniciales - lo que hay que corregir de entrada, cuando se
  *   reintenta por haber chocado con otra ficha del mismo lote.
+ * @param esfuerzo - esfuerzo de razonamiento que pisa el de la configuración,
+ *   para poder medir un valor contra otro sin editar ficheros.
  * @returns `{ draft }` si pasó, o `{ problemas }` con lo que falló en el último
  *   intento; y en los dos casos `rechazos`, los códigos de lo que se rechazó.
  */
-async function redactar(ctx, modelo, product, dominio, usados, signal, problemasIniciales = []) {
+async function redactar(ctx, modelo, product, dominio, usados, signal, problemasIniciales = [], esfuerzo = undefined) {
   const d = dominio.description ?? {}
   const maxIntentos = d.maxAttempts ?? 3
   let problemas = problemasIniciales
@@ -212,32 +214,56 @@ async function redactar(ctx, modelo, product, dominio, usados, signal, problemas
   // Los códigos de todo lo que se rechazó por el camino, aunque al final salga
   // bien: es lo único que dice qué regla está costando llamadas.
   const rechazos = []
+  const milisegundos = []
+  // El pico de razonamiento del lote: es lo que dice si `maxTokens` va holgado o
+  // al filo, y hasta ahora solo se veía en los fallos definitivos.
+  let razonamientoMaximo = 0
   // Si ni un intento produjo un bloque aprovechable, el fallo no es de este
   // producto: es del modelo o del prompt, y seguir con el lote es tirar llamadas.
   let algunBloque = false
 
   for (let intento = 1; intento <= maxIntentos; intento += 1) {
     const { system, user } = buildPrompt(product, dominio, problemas.map((x) => x.message))
+    const arranque = Date.now()
     let texto = ''
     let razonamiento = 0
-    for await (const trozo of ctx.llm.stream({
-      provider: modelo.provider,
-      model: modelo.model,
-      system,
-      messages: [createUserMessage({
-        content: [{ type: 'text', text: user }],
-        source: { kind: 'plugin', plugin: name, contextForm: 'transient' },
-      })],
-      // Redactar no necesita razonamiento alto, y ponerlo alto agota el
-      // presupuesto de salida antes de escribir nada.
-      reasoningEffort: d.reasoningEffort ?? 'low',
-      maxTokens: d.maxTokens ?? 4000,
-      ...(d.temperature === undefined ? {} : { temperature: d.temperature }),
-      signal,
-    })) {
-      if (trozo.type === 'text-delta') texto += trozo.text
-      else if (trozo.type === 'reasoning-delta') razonamiento += trozo.text.length
+    const reasoningEffort = esfuerzo ?? d.reasoningEffort ?? 'high'
+    try {
+      for await (const trozo of ctx.llm.stream({
+        provider: modelo.provider,
+        model: modelo.model,
+        system,
+        messages: [createUserMessage({
+          content: [{ type: 'text', text: user }],
+          source: { kind: 'plugin', plugin: name, contextForm: 'transient' },
+        })],
+        reasoningEffort,
+        // Holgado a propósito: el razonamiento consume de este mismo presupuesto,
+        // y un tope justo para el texto deja la respuesta vacía.
+        maxTokens: d.maxTokens ?? 16000,
+        ...(d.temperature === undefined ? {} : { temperature: d.temperature }),
+        signal,
+      })) {
+        if (trozo.type === 'text-delta') texto += trozo.text
+        else if (trozo.type === 'reasoning-delta') razonamiento += trozo.text.length
+      }
+    } catch (error) {
+      // Qué esfuerzos acepta el adaptador depende de su versión, y el error crudo
+      // no dice de dónde sale el valor ni cuáles valen.
+      if (error?.code === 'UNSUPPORTED_REASONING_EFFORT' || /reasoning effort/i.test(error?.message ?? '')) {
+        throw new Error(
+          `el proveedor no acepta el esfuerzo de razonamiento "${reasoningEffort}". `
+          + 'Sale de `description.reasoningEffort` en catalog.config.yml (o del parámetro '
+          + '`reasoningEffort` de esta llamada). DeepSeek acepta off, high y max en todas sus '
+          + `versiones, y low solo desde rc.8. Mensaje del proveedor: ${error.message}`,
+        )
+      }
+      throw error
     }
+    // Cuánto tarda cada llamada: sin medirlo, discutir si el lote puede ir más
+    // rápido es discutir sobre estimaciones.
+    milisegundos.push(Date.now() - arranque)
+    razonamientoMaximo = Math.max(razonamientoMaximo, razonamiento)
     diagnostico = {
       caracteresTexto: texto.length,
       caracteresRazonamiento: razonamiento,
@@ -278,11 +304,13 @@ async function redactar(ctx, modelo, product, dominio, usados, signal, problemas
           attempts: intento,
         },
         rechazos,
+        milisegundos,
+        razonamientoMaximo,
       }
     }
   }
 
-  return { problemas, diagnostico, rechazos, sistemico: !algunBloque }
+  return { problemas, diagnostico, rechazos, milisegundos, razonamientoMaximo, sistemico: !algunBloque }
 }
 
 /**
@@ -601,6 +629,14 @@ export function apply(ctx, config) {
           '`missing` (lo normal) solo escribe los que no tienen ficha todavía; `always` rescribe también '
           + 'los que ya la tienen, perdiendo el texto anterior. Por defecto, lo que diga la configuración.',
       },
+      reasoningEffort: {
+        type: 'string',
+        description:
+          'Pisa `description.reasoningEffort` solo en esta llamada, para poder medir un valor contra '
+          + 'otro sobre los mismos productos (con `regenerate: "always"`) y comparar '
+          + '`segundosPorLlamada` e `intentosMedios`. DeepSeek acepta off, low, high y max. '
+          + 'Úsalo para medir, no por gusto: lo normal es lo que diga la configuración.',
+      },
       dryRun: {
         type: 'boolean',
         description:
@@ -625,6 +661,24 @@ export function apply(ctx, config) {
             description: 'Productos que no se intentaron porque el fallo era del modelo, no de los datos.',
           },
           llamadas: { type: 'integer', required: true, description: 'Llamadas al modelo que ha costado el lote.' },
+          segundos: { type: 'number', required: true, description: 'Lo que ha tardado el lote de pared.' },
+          razonamientoMaximo: {
+            type: 'integer',
+            required: true,
+            description: 'Caracteres de razonamiento de la llamada que más razonó. Si se acerca a description.maxTokens × 3, el presupuesto va al filo y habrá respuestas vacías.',
+          },
+          segundosPorLlamada: {
+            type: 'number',
+            required: true,
+            description: 'Media por llamada al modelo. Es la latencia del proveedor: no baja paralelizando, solo cambiando de modelo.',
+          },
+          esfuerzo: { type: 'string', required: true, description: 'Esfuerzo de razonamiento con el que se ha redactado.' },
+          maxTokensConfigurado: { type: 'integer', required: true, description: 'El presupuesto por llamada, para poder compararlo con lo que se razonó.' },
+          sonda: {
+            type: 'boolean',
+            required: true,
+            description: 'Si el primer producto se ha redactado solo antes de paralelizar el resto.',
+          },
           intentosMedios: {
             type: 'number',
             required: true,
@@ -681,9 +735,14 @@ export function apply(ctx, config) {
         }
         const partes = [
           `${value.generados} de ${value.solicitados} fichas escritas con ${value.modelo}`
-          + ` en ${value.llamadas} ${value.llamadas === 1 ? 'llamada' : 'llamadas'} al modelo`
+          + ` en ${value.segundos}s`
+          + ` y ${value.llamadas} ${value.llamadas === 1 ? 'llamada' : 'llamadas'} al modelo`
           + `${value.intentosMedios > 0 ? ` (${value.intentosMedios} intentos por ficha)` : ''}.`
           + `${value.fallidos > 0 ? ` ${value.fallidos} no pasaron la validación.` : ''}`,
+          `Cada llamada tarda ${value.segundosPorLlamada}s de media con razonamiento "${value.esfuerzo}":`
+          + ' eso es latencia del proveedor y no baja paralelizando.'
+          + `${value.razonamientoMaximo > 0 ? ` La llamada que más razonó gastó ${value.razonamientoMaximo} caracteres en ello, de un presupuesto de ${value.maxTokensConfigurado} tokens.` : ''}`
+          + `${value.sonda ? ' El primer producto ha ido solo (sonda de configuración), lo que cuesta una ronda entera; en la siguiente carga con este mismo modelo ya no hará falta.' : ''}`,
           `Del catálogo cargado desde ${value.sourcePath}.`
           + ` Quedan ${value.pendientes} productos sin ficha. Sin revisar: ${value.sinRevisar}.`,
           `Guardado en ${value.outputPath}`,
@@ -785,6 +844,12 @@ export function apply(ctx, config) {
           fallidos: 0,
           cortado: 0,
           llamadas: 0,
+          segundos: 0,
+          razonamientoMaximo: 0,
+          segundosPorLlamada: 0,
+          esfuerzo: args.reasoningEffort?.trim() || dominio.description?.reasoningEffort || 'high',
+          maxTokensConfigurado: dominio.description?.maxTokens ?? 16000,
+          sonda: false,
           intentosMedios: 0,
           rechazos: [],
           pendientes: pendientes.length,
@@ -816,9 +881,14 @@ export function apply(ctx, config) {
       let cortado = 0
       let llamadas = 0
 
+      const tiempos = []
+      let picoRazonamiento = 0
+
       /** Acepta o registra el resultado de un producto. */
       const asentar = (product, resultado) => {
         rechazos.push(...(resultado.rechazos ?? []))
+        tiempos.push(...(resultado.milisegundos ?? []))
+        picoRazonamiento = Math.max(picoRazonamiento, resultado.razonamientoMaximo ?? 0)
         llamadas += resultado.draft?.attempts ?? (dominio.description?.maxAttempts ?? 3)
         if (resultado.draft) {
           fichas[product.sku] = resultado.draft
@@ -835,24 +905,40 @@ export function apply(ctx, config) {
         })
       }
 
-      // El primero va solo: si el modelo no devuelve nada, el fallo es de
-      // configuración y para saberlo no hace falta gastar un lote entero.
-      const [cabeza, ...resto] = objetivo
-      exec.signal.throwIfAborted()
-      const primero = await redactar(ctx, modelo, cabeza, dominio, usados, exec.signal)
-      asentar(cabeza, primero)
+      const arranqueLote = Date.now()
+      const concurrencia = Math.max(1, dominio.description?.concurrency ?? 4)
 
-      if (primero.sistemico) {
-        cortado = resto.length
-      } else {
-        // El resto en paralelo, en trozos: es lo que convierte 4 productos en
-        // serie (204 s medidos) en 4 a la vez.
-        const concurrencia = Math.max(1, dominio.description?.concurrency ?? 4)
+      // La sonda: el primer producto solo, para que un modelo mal configurado
+      // cueste tres llamadas y no un lote entero. Pero es una ola secuencial
+      // completa —un 33 % del tiempo de pared en un lote de cuatro—, así que con
+      // `auto` se salta cuando ya hay una ficha escrita por ESTE mismo modelo:
+      // eso es prueba de que la configuración funciona.
+      const politicaSonda = dominio.description?.probeFirst ?? 'auto'
+      const yaFuncionó = Object.values(fichas).some(
+        (ficha) => ficha.model === `${modelo.provider}/${modelo.model}`,
+      )
+      const sondear = politicaSonda === 'always'
+        || (politicaSonda !== 'never' && !yaFuncionó)
+
+      const esfuerzo = args.reasoningEffort?.trim() || undefined
+
+      let resto = objetivo
+      if (sondear) {
+        const [cabeza, ...cola] = objetivo
+        resto = cola
+        exec.signal.throwIfAborted()
+        const primero = await redactar(ctx, modelo, cabeza, dominio, usados, exec.signal, [], esfuerzo)
+        asentar(cabeza, primero)
+        if (primero.sistemico) resto = []
+        cortado = primero.sistemico ? cola.length : 0
+      }
+
+      if (cortado === 0) {
         for (let inicio = 0; inicio < resto.length; inicio += concurrencia) {
           exec.signal.throwIfAborted()
           const trozo = resto.slice(inicio, inicio + concurrencia)
           const resultados = await Promise.all(
-            trozo.map((product) => redactar(ctx, modelo, product, dominio, usados, exec.signal)),
+            trozo.map((product) => redactar(ctx, modelo, product, dominio, usados, exec.signal, [], esfuerzo)),
           )
           // Se aceptan en orden, no a la vez: el trozo se redactó contra la
           // misma foto de lo ya usado, así que dos fichas pueden haber elegido
@@ -865,13 +951,30 @@ export function apply(ctx, config) {
               continue
             }
             const reintento = await redactar(
-              ctx, modelo, product, dominio, usados, exec.signal, colisiones,
+              ctx, modelo, product, dominio, usados, exec.signal, colisiones, esfuerzo,
             )
-            asentar(product, { ...reintento, rechazos: [...(resultado.rechazos ?? []), ...colisiones.map((x) => x.code)] })
+            asentar(product, {
+              ...reintento,
+              rechazos: [...(resultado.rechazos ?? []), ...colisiones.map((x) => x.code)],
+              milisegundos: [...(resultado.milisegundos ?? []), ...(reintento.milisegundos ?? [])],
+            })
+          }
+
+          // Sin sonda, la guarda pasa al primer trozo: si nadie de ahí produjo un
+          // bloque, el fallo es de configuración y no hay que seguir.
+          if (!sondear && inicio === 0 && generadas.length === 0
+              && resultados.every((r) => r.sistemico)) {
+            cortado = resto.length - trozo.length
+            break
           }
         }
       }
       guardarSeo(salida, fichas)
+
+      const segundos = Math.round((Date.now() - arranqueLote) / 100) / 10
+      const segundosPorLlamada = tiempos.length === 0
+        ? 0
+        : Math.round((tiempos.reduce((a, b) => a + b, 0) / tiempos.length) / 100) / 10
 
       const cuenta = new Map()
       for (const code of rechazos) cuenta.set(code, (cuenta.get(code) ?? 0) + 1)
@@ -885,6 +988,12 @@ export function apply(ctx, config) {
         fallidos: fallos.length,
         cortado,
         llamadas,
+        segundos,
+        razonamientoMaximo: picoRazonamiento,
+        segundosPorLlamada,
+        esfuerzo: esfuerzo ?? dominio.description?.reasoningEffort ?? 'high',
+        maxTokensConfigurado: dominio.description?.maxTokens ?? 16000,
+        sonda: sondear,
         intentosMedios: generadas.length === 0
           ? 0
           : Math.round((generadas.reduce((suma, f) => suma + f.attempts, 0) / generadas.length) * 100) / 100,
@@ -903,6 +1012,88 @@ export function apply(ctx, config) {
       title: args.dryRun
         ? 'Ver el prompt de las descripciones'
         : `Escribir fichas SEO${args.sku ? ` (${args.sku})` : args.limit ? ` (${args.limit})` : ''}`,
+      kind: 'other',
+      rawInput: args,
+    }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'catalog_seo',
+    description:
+      'Devuelve las fichas SEO ya escritas, para poder leerlas. Úsala para enseñárselas al usuario '
+      + 'antes de que apruebe nada con catalog_review —aprobar sin ver es justo lo que la política de '
+      + 'contenido generado prohíbe— y para comparar dos formas de generarlas. `catalog_describe` solo '
+      + 'devuelve una de muestra, así que esta es la manera de ver el resto.',
+    parameters: {
+      sku: { type: 'string', description: 'Una ficha concreta.' },
+      skus: { type: 'array', items: { type: 'string' }, description: 'Varias fichas concretas.' },
+      limit: { type: 'integer', description: 'Las N primeras. Por defecto 4, para no llenar el contexto.' },
+      soloSinRevisar: { type: 'boolean', description: 'Solo las que nadie ha revisado todavía.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          outputPath: { type: 'string', required: true },
+          total: { type: 'integer', required: true, description: 'Fichas guardadas en total.' },
+          sinRevisar: { type: 'integer', required: true },
+          fichas: { type: 'array', required: true, items: DRAFT_SCHEMA },
+          noEncontrados: { type: 'array', required: true, items: { type: 'string' } },
+        },
+      },
+      render: (_args, value) => {
+        if (value.total === 0) {
+          return [{ type: 'text', text: `No hay ninguna ficha escrita todavía (${value.outputPath}).` }]
+        }
+        const partes = [`${value.total} fichas guardadas, ${value.sinRevisar} sin revisar.`]
+        for (const f of value.fichas) {
+          partes.push(
+            `${f.sku} — ${f.reviewed ? 'revisada' : 'SIN revisar'} · ${f.attempts} `
+            + `${f.attempts === 1 ? 'intento' : 'intentos'} · ${f.model}\n`
+            + `  seoTitle (${f.seoTitle.length}): ${f.seoTitle}\n`
+            + `  seoDescription (${f.seoDescription.length}): ${f.seoDescription}\n`
+            + `  handle: ${f.handle}\n`
+            + `  altText: ${f.altText}\n`
+            + `  bodyHtml: ${f.bodyHtml}\n`
+            + `  feedDescription: ${f.feedDescription}`,
+          )
+        }
+        if (value.noEncontrados.length > 0) {
+          partes.push(`Sin ficha: ${value.noEncontrados.join(', ')}`)
+        }
+        return [{ type: 'text', text: partes.join('\n\n') }]
+      },
+    },
+    isConcurrencySafe: () => true,
+    async execute(args) {
+      const dominio = loadConfig(config.configPath)
+      const salida = rutaSeo(dominio)
+      const fichas = cargarSeo(salida)
+      const todas = Object.values(fichas)
+
+      const pedidos = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
+      let elegidas
+      let noEncontrados = []
+      if (pedidos.length > 0) {
+        elegidas = pedidos.map((sku) => fichas[sku]).filter(Boolean)
+        noEncontrados = pedidos.filter((sku) => !fichas[sku])
+      } else {
+        const candidatas = args.soloSinRevisar ? todas.filter((f) => !f.reviewed) : todas
+        elegidas = candidatas.slice(0, args.limit ?? 4)
+      }
+
+      return {
+        outputPath: salida,
+        total: todas.length,
+        sinRevisar: todas.filter((f) => !f.reviewed).length,
+        fichas: elegidas,
+        noEncontrados,
+      }
+    },
+    presentCall: (args) => ({
+      card: 'generic',
+      title: args.sku ? `Ver la ficha ${args.sku}` : 'Ver las fichas SEO escritas',
       kind: 'other',
       rawInput: args,
     }),

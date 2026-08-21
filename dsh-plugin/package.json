@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-catalog-agent",
-  "version": "0.4.0",
+  "version": "0.7.2",
   "description": "Plugin de dsh: carga de catálogo de productos desde fichero, descripción e imagen con IA, y publicación en Shopify con precios y stock.",
   "type": "module",
   "main": "lib/index.js",
@@ -16,8 +16,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8",
     "@deepseek-ai/schemastery": "3.18.1",
     "csv-parse": "7.0.2",
     "js-yaml": "5.3.0"
