@@ -130,82 +130,42 @@ fichero (hoy `missingInFile: leave`).
 
 ## Arrancar dsh
 
-No hay binario en el `PATH`: dsh se lanza con `npx`, y **el directorio desde el que lo lanzas es la
-raíz de workspace** de la sesión (es lo que dsh usa para resolver las skills de ámbito de
-proyecto), así que lánzalo siempre desde el mismo sitio.
-
 ```bash
-npx dsh web                  # alias de `npx dsh --profile web`; imprime la URL al arrancar
-npx dsh web --port 8080      # los flags después de `web` son de la app web, no del lanzador
-npx dsh --help               # la ayuda del lanzador; `npx dsh web --help` es la de la app
+# desde la raíz del repo: el directorio de lanzamiento es la raíz de workspace de la sesión
+npx @deepseek-ai/dsh@0.1.0-rc.6 web                  # http://localhost:3080
+npx @deepseek-ai/dsh@0.1.0-rc.6 web --port 8080
 ```
 
-Corre en primer plano: se para con `Ctrl-C`. Por defecto queda en
-[http://localhost:3080](http://localhost:3080). El perfil `web` se auto-inicializa la primera vez
-en `~/.dsh/profiles/web/`.
-
-Para ver el árbol del perfil sin arrancar nada, `npx dsh --profile web --dump-config`. Ojo: eso es
-el **plano host**, y este plugin lo monta el preset (plano agente), así que ahí no aparece. Se
-comprueba abriendo una sesión con el preset «Agente de catálogo» y llamando a una herramienta.
+Se para con `Ctrl-C`. Fija la versión: `npx dsh` es otro paquete de npm y falla con `could not
+determine executable to run`, y sin versión npx se descarga la rc más nueva.
 
 ## Instalar el plugin (una sola vez)
 
 ```bash
-# 1. dependencias PROPIAS del plugin: pnpm lo enlaza con `link:` y Node resuelve por realpath,
-#    así que si esto falta, dsh arranca con `Cannot find package '@deepseek-ai/dsh-tools'`
-cd dsh-plugin && npm install && cd ..
+cd dsh-plugin && npm install && cd ..                # dependencias propias del plugin
+npx @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add "$PWD/dsh-plugin"
 
-# 2. darlo de alta en el perfil (reenvía a pnpm en el directorio del perfil)
-npx dsh plugin --profile web add "$PWD/dsh-plugin"
-
-# 3. desplegar el preset de agente, que es quien monta las herramientas
-mkdir -p ~/.dsh/.agent-presets/catalog-agent
-cp agent-presets/catalog-agent/preset.yml agent-presets/catalog-agent/agent.cordis.yml \
-   ~/.dsh/.agent-presets/catalog-agent/
+mkdir -p ~/.dsh/.agent-presets/catalog-agent         # el preset es quien monta las herramientas
+cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
 ```
 
-El aviso `declares no dsh.bundle` del paso 2 es lo esperado: el plugin no es una capa del perfil
-(plano host), lo monta el preset (plano agente).
-
-El paso 2 deja en `~/.dsh/profiles/web/package.json` una entrada
-`dsh-plugin-catalog-agent: link:<ruta absoluta>/dsh-plugin`, y un symlink en el `node_modules` del
-perfil. Es un enlace **por ruta absoluta**: mover el repo o renombrar el paquete lo deja colgando.
-
-El preset se elige por sesión en el selector de dsh. Si quieres que sea el de por defecto, es
-`agent-presets.default` en `~/.dsh/settings.yaml` — y ojo, un default que nombre un preset que no
-existe se guarda sin queja y falla al resolver la siguiente sesión.
-
-Las rutas de la fila del preset son **absolutas** a propósito, así que hay que ajustarlas a la
-máquina donde se despliegue.
+El preset se elige por sesión en dsh, o se fija en `agent-presets.default` de
+`~/.dsh/settings.yaml`. Las rutas de la fila del preset son absolutas: ajústalas a la máquina.
 
 ## Qué hay que hacer en cada cambio
 
-No todo pide lo mismo, y reiniciar dsh a ciegas cuesta tiempo. La regla corta: **cambio de código
-del plugin → reiniciar dsh; cambio de configuración → basta con abrir sesión nueva.**
-
-| Qué cambias | Qué hay que hacer |
+| Qué cambias | Qué hacer |
 |---|---|
-| `dsh-plugin/lib/index.js` u otro código del plugin | **Reiniciar dsh** (`Ctrl-C` y `npx dsh web`) y abrir sesión nueva. El proceso ya tiene el módulo importado y no lo vuelve a leer; el HMR que trae dsh es de los bundles del cliente, no de los plugins del servidor. No hace falta reinstalar nada: el enlace apunta al directorio de trabajo. |
-| Dependencias del plugin (`dsh-plugin/package.json`) | `cd dsh-plugin && npm install`, y reiniciar dsh. |
-| Nombre del paquete, o ruta del repo | `npx dsh plugin --profile web remove <nombre-viejo>` + `add "$PWD/dsh-plugin"`, y reiniciar. Sin el `remove`, en el perfil queda una dependencia `link:` a una ruta que ya no existe. |
-| `agent.cordis.yml` o `preset.yml` (la config de las filas) | Copiarlos otra vez a `~/.dsh/.agent-presets/catalog-agent/` y **abrir sesión nueva; no hace falta reiniciar**. El documento se relee y la generación nueva entra en la siguiente sesión que se cree; las sesiones ya abiertas se quedan con la composición con la que nacieron. |
-| Un fichero *al lado* del preset (skill, asset) | Eso no lo nota el sello de generación: llega a las sesiones nuevas solo cuando cambia el propio `agent.cordis.yml` o cuando se reinicia el proceso. |
-| `catalog.config.yml` | Hoy nada: el plugin todavía no lo lee. Cuando lo lea, la intención es leerlo **en cada llamada**, como ya hace `stockPath`, para que editar la configuración no exija reinicio. |
-| `~/.dsh/skills/*/SKILL.md` | Nada: el watcher de skills lo recoge en caliente. |
-| El `.env` del repo | Nada en dsh: el plugin nativo no lo lee, usa el modelo de la sesión del harness. Solo afecta a `agent.py` y a las evals. |
+| Código del plugin (`dsh-plugin/lib/`) | Reiniciar dsh y abrir sesión nueva |
+| Dependencias del plugin (`dsh-plugin/package.json`) | `npm install` en `dsh-plugin/`, y reiniciar |
+| Nombre del paquete, o ruta del repo | `plugin --profile web remove <nombre-viejo>` + `add "$PWD/dsh-plugin"`, y reiniciar |
+| `agent.cordis.yml` o `preset.yml` | Copiarlos otra vez al preset desplegado y abrir sesión nueva; sin reiniciar |
+| `catalog.config.yml` | Nada todavía: el plugin no lo lee |
+| `~/.dsh/skills/*/SKILL.md` | Nada: se recoge en caliente |
 
-Ciclo de trabajo típico, entonces: editas `lib/index.js`, `Ctrl-C`, `npx dsh web`, abres sesión
-nueva con el preset «Agente de catálogo» y pruebas la herramienta.
-
-La versión sigue **semver (x.y.z)** y su fuente canónica es `version` en
-`dsh-plugin/package.json`. El `name` del preset y la línea de la persona (`Versión del código …:
-x.y.z`) deben coincidir con ella; se suben a mano en cada release, y luego se redeploya y se
-reinicia dsh. La versión va en la persona (y no solo en el `name`) porque la persona se congela
-por sesión en el system prompt, mientras que el `name` es una etiqueta global que se re-lee para
-todas las sesiones.
-
-Si actualizas dsh, vuelve a fijar `@deepseek-ai/dsh-tools` en `dsh-plugin/package.json` a la
-versión nueva y reinstala.
+La versión (`version` en `dsh-plugin/package.json`) tiene que coincidir con el `name` del preset y
+con la línea de la persona; se suben a mano en cada release. Si actualizas dsh, vuelve a fijar
+`@deepseek-ai/dsh-tools` a la versión nueva y reinstala.
 
 ## Variables de entorno
 
@@ -302,30 +262,8 @@ Shopify. Y hay que hacerlo contra `catalogo.example.csv`, no contra el fichero d
 | fila `wine-tools` del preset | `catalog-tools` |
 | preset «Agente de vinos» | «Agente de catálogo» |
 
-GitHub deja redirigidas las URLs del nombre viejo, así que un `git remote` que se haya quedado
-atrás sigue funcionando; conviene actualizarlo igualmente (`git remote set-url origin`).
-
-Como el nombre del paquete es lo que resuelve la fila del preset, y el enlace del perfil es por
-ruta absoluta, después de esto hay que **volver a dar de alta el plugin y redeployar el preset**:
-
-```bash
-# el enlace viejo apunta a un paquete y a una ruta que ya no existen
-npx dsh plugin --profile web remove dsh-plugin-wine-agent
-npx dsh plugin --profile web add "$PWD/dsh-plugin"
-
-mkdir -p ~/.dsh/.agent-presets/catalog-agent
-cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
-rm -rf ~/.dsh/.agent-presets/wine-agent      # el preset viejo, ya renombrado
-```
-
-Y si `agent-presets.default` en `~/.dsh/settings.yaml` sigue apuntando a `wine-agent`, cámbialo a
-`catalog-agent`: un default que nombre un preset inexistente no da error al guardarse, falla al
-resolver la sesión. Después, reinicia dsh.
-
-Al cambiar el directorio del proyecto hay que rehacer lo que dsh tenía enlazado por ruta
-absoluta: el plugin del perfil (`~/.dsh/profiles/web/package.json` apunta al `dsh-plugin/` viejo) y
-la skill de usuario `~/.dsh/skills/wine-rss-agent/SKILL.md`, que además sigue describiendo el
-agente de noticias.
+GitHub redirige las URLs del nombre viejo, así que un clon que se haya quedado atrás sigue
+funcionando. El redeploy en dsh ya está hecho: perfil, preset y `agent-presets.default`.
 
 Sigue pendiente de renombrar, porque toca código: los nombres de las herramientas
 (`wine_rss_latest`, `wine_article_fetch`, `wine_stock_list`, `wine_recommend`), el `User-Agent` del
