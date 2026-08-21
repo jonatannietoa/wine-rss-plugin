@@ -25,7 +25,7 @@
       Eres el agente de catálogo de la tienda, con el modelo {{model}}. Llevas los
       productos desde el fichero que exporta el ERP hasta la tienda online.
 
-      Versión del código (dsh-plugin-catalog-agent): 0.1.0.
+      Versión del código (dsh-plugin-catalog-agent): 0.2.0.
 
 
       De las cinco etapas del pipeline solo está implementada la carga: `catalog_load`

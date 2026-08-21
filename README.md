@@ -204,17 +204,6 @@ Vino sin alcohol 8 · Otros 7 · Estuche 6 · Vino brisat 2 · Vino generoso 1
 avisos: sinFormato 27 · sinOrigen 18
 ```
 
-## Arrancar dsh
-
-```bash
-# desde la raíz del repo: el directorio de lanzamiento es la raíz de workspace de la sesión
-npx @deepseek-ai/dsh@0.1.0-rc.6 web                  # http://localhost:3080
-npx @deepseek-ai/dsh@0.1.0-rc.6 web --port 8080
-```
-
-Se para con `Ctrl-C`. Fija la versión: `npx dsh` es otro paquete de npm y falla con `could not
-determine executable to run`, y sin versión npx se descarga la rc más nueva.
-
 ## Instalar el plugin (una sola vez)
 
 ```bash
@@ -225,24 +214,78 @@ mkdir -p ~/.dsh/.agent-presets/catalog-agent         # el preset es quien monta 
 cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
 ```
 
+`plugin add` **no copia el plugin**: deja un `link:` al repo en `~/.dsh/profiles/web/package.json` y
+un symlink en su `node_modules`. Por eso tocar `dsh-plugin/lib/` no obliga a reinstalar nada, solo a
+reiniciar dsh. Este paso solo se repite si cambia el **nombre del paquete** o si **mueves el repo**.
+
 El preset se elige por sesión en dsh, o se fija en `agent-presets.default` de
 `~/.dsh/settings.yaml`. Las rutas de la fila del preset son absolutas: ajústalas a la máquina.
 
-## Qué hay que hacer en cada cambio
+## Desplegar cambios y arrancar
+
+El ciclo completo después de tocar el repo, desde la raíz:
+
+```bash
+# 1. sube la versión en los TRES sitios (ver abajo) y pasa los tests
+cd dsh-plugin && npm test && cd ..
+
+# 2. despliega el preset — el plugin no hay que redesplegarlo, es un symlink
+cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
+
+# 3. reinicia dsh: Ctrl-C donde esté corriendo, y otra vez
+npx @deepseek-ai/dsh@0.1.0-rc.6 web                  # http://localhost:3080
+
+# 4. abre una SESIÓN NUEVA en el navegador
+```
+
+El paso 4 no es opcional: una sesión ya abierta sigue con el código y el preset que tenía cuando se
+creó. Y fija la versión de dsh en el comando: `npx dsh` es otro paquete de npm y falla con `could
+not determine executable to run`, y sin versión npx se baja la rc más nueva. Para otro puerto,
+`--port 8080`. El directorio desde el que lanzas es la raíz de workspace de la sesión.
+
+### No siempre hace falta todo
 
 | Qué cambias | Qué hacer |
 |---|---|
-| Código del plugin (`dsh-plugin/lib/`) | Reiniciar dsh y abrir sesión nueva |
-| Dependencias del plugin (`dsh-plugin/package.json`) | `npm install` en `dsh-plugin/`, y reiniciar |
+| `dsh-plugin/lib/*.js` | Reiniciar dsh + sesión nueva |
+| `dsh-plugin/package.json` (dependencias) | `npm install` en `dsh-plugin/`, reiniciar + sesión nueva |
+| `agent.cordis.yml` o `preset.yml` | `cp` al preset desplegado + sesión nueva. **Sin reiniciar** |
+| `catalog.config.yml` | Nada: `catalog_load` lo relee en cada llamada |
+| `catalogo.example.csv` o los tests | `npm test`. A dsh no le afecta |
 | Nombre del paquete, o ruta del repo | `plugin --profile web remove <nombre-viejo>` + `add "$PWD/dsh-plugin"`, y reiniciar |
-| `agent.cordis.yml` o `preset.yml` | Copiarlos otra vez al preset desplegado y abrir sesión nueva; sin reiniciar |
-| `catalog.config.yml` | Nada: se relee en cada llamada a `catalog_load` |
-| `dsh-plugin/lib/catalog.js` o `catalogo.example.csv` | `npm test` en `dsh-plugin/`, y reiniciar si tocaste el plugin |
 | `~/.dsh/skills/*/SKILL.md` | Nada: se recoge en caliente |
 
-La versión (`version` en `dsh-plugin/package.json`) tiene que coincidir con el `name` del preset y
-con la línea de la persona; se suben a mano en cada release. Si actualizas dsh, vuelve a fijar
-`@deepseek-ai/dsh-tools` a la versión nueva y reinstala.
+### La versión va en tres sitios
+
+`version` de `dsh-plugin/package.json` es la fuente canónica; el `name` de `preset.yml` y la línea
+de la persona de `agent.cordis.yml` tienen que coincidir con ella. Se suben a mano en cada release:
+
+```bash
+node -p "require('./dsh-plugin/package.json').version"
+grep '^name:' agent-presets/catalog-agent/preset.yml
+grep -o 'dsh-plugin-catalog-agent): [0-9.]*' agent-presets/catalog-agent/agent.cordis.yml
+```
+
+### Comprobar que dsh corre lo último
+
+La trampa habitual: subes la versión en el repo y dsh sigue enseñando la vieja, porque lo que lee es
+la **copia desplegada** del preset, no el repo. Si el selector de dsh dice «Agente de catálogo
+(0.1.0)» cuando el repo ya va por 0.2.0, falta el `cp` del paso 2 o falta abrir sesión nueva.
+
+```bash
+diff -r agent-presets/catalog-agent/ ~/.dsh/.agent-presets/catalog-agent/ && echo "preset al día"
+```
+
+Y para saber si el proceso que tienes vivo lleva tu último cambio de código, compara cuándo arrancó
+con cuándo tocaste los ficheros:
+
+```bash
+ps -o lstart= -p $(pgrep -f 'deepseek-ai/dsh' | head -1)   # cuándo arrancó dsh
+ls -lT dsh-plugin/lib/*.js                                 # cuándo cambió el plugin
+```
+
+Si actualizas dsh, vuelve a fijar `@deepseek-ai/dsh-tools` a la versión nueva en
+`dsh-plugin/package.json` y reinstala.
 
 ## Variables de entorno
 
