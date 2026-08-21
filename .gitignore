@@ -15,6 +15,22 @@ node_modules/
 npm-debug.log*
 .npm/
 
+# Artefactos del pipeline: el JSON normalizado y las imágenes generadas. Salen del
+# catálogo de producción, así que llevan costes y códigos de proveedor reales.
+.artifacts/
+
+# Bandeja de entrada: catálogos de clientes que se dejan ahí para cargarlos.
+entradas/*
+!entradas/.gitkeep
+
+# Catálogos de producción: son datos reales de la tienda y NO se suben nunca.
+# El repo solo lleva el fixture anonimizado `catalogo.example.csv`.
+stock-rosas.csv
+stock*.csv
+catalogo*.csv
+*-catalogo.csv
+!*.example.csv
+
 # Secretos y entorno
 .env
 .env.*

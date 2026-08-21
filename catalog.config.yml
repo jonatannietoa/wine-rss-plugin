@@ -1,0 +1,322 @@
+# Configuración de dominio del agente de catálogo (`dsh-plugin-catalog-agent`).
+#
+# Aquí vive TODO lo que es de la tienda y no del plugin: qué fichero se procesa,
+# cómo se llaman sus columnas, cómo se traduce su taxonomía, con qué tono se
+# escriben las descripciones y a qué tienda de Shopify se publica. Cambiar de
+# vertical, de ERP o de tienda es cambiar este fichero, no el código.
+#
+# Aquí NO van claves ni tokens: esos viven en `.env` (ver `.env.example`) y se
+# referencian por nombre de variable de entorno.
+#
+# Estado: el tool `catalog_load` lee de aquí los bloques `source`, `columns`,
+# `normalize`, `taxonomy` y `output` (etapas 1 y 2). Los bloques `description`,
+# `image` y `shopify` son todavía el contrato de las etapas 3, 4 y 5, que no
+# están implementadas y no leen nada de aquí.
+
+version: 1
+
+# ── 1. Ingesta ───────────────────────────────────────────────────────────────
+source:
+  # Ruta absoluta a propósito: el catálogo no depende del directorio de trabajo
+  # de la sesión. El fichero real es de producción y está en `.gitignore`; para
+  # desarrollar, apunta a `catalogo.example.csv`, que es el fixture anonimizado.
+  path: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/stock-rosas.csv
+  # Bandejas de entrada: donde se buscan los ficheros que no son el habitual.
+  # `catalog_sources` recorre estas carpetas en orden y `catalog_load` acepta un
+  # nombre suelto ("cliente-x.csv", o incluso "cliente-x") y lo busca en ellas.
+  #
+  # dsh no admite adjuntar un CSV al chat —su capa de adjuntos es solo de
+  # imágenes—, así que dejar el fichero en una de estas carpetas es lo más
+  # parecido a subirlo. Y el plugin NO puede saber cuál es el directorio de la
+  # sesión de dsh (no lo expone ningún paquete del harness), así que si trabajas
+  # con una carpeta por cliente, decláralas aquí. Se admite `~`.
+  #
+  # `./entradas` está en `.gitignore` porque va a tener catálogos de clientes.
+  dirs:
+    - ./entradas
+    # - ~/Documents/Bodegas Rosas to Shopify
+  pattern: '*.csv'
+  format: csv
+  encoding: utf-8
+  delimiter: ','
+  # Formatos locales del export del ERP.
+  decimalSeparator: ','
+  thousandsSeparator: '.'
+  currencySymbol: '€'
+  dateFormat: d/M/yyyy
+  # La cabecera trae espacios de relleno (' Precio Venta tienda'): se recortan
+  # antes de comparar nombres de columna.
+  trimHeaders: true
+  # Carga incremental: procesar solo lo que cambió en el ERP desde la última
+  # ejecución. Con `enabled: false` se procesa el fichero entero.
+  incremental:
+    enabled: true
+    column: Fecha últ. modificación
+
+# ── 2. Normalización ─────────────────────────────────────────────────────────
+# Columna del fichero → campo del modelo interno de producto. Es el único punto
+# que conoce los nombres del ERP: cambiar de export es cambiar este bloque.
+columns:
+  sku: 'Nº'
+  title: Descripción
+  origin: Denominación Origen
+  price: Precio Venta tienda
+  cost: Último coste directo
+  stock: Inventario
+  countryCode: Cód. país/región de origen
+  productionType: Tipo elaboración
+  blocked: Bloqueado
+  supplierCode: Nº proveedor
+  category: Cód. categoría producto
+  group: Cód. grupo producto
+  modifiedAt: Fecha últ. modificación
+
+normalize:
+  # El ERP manda los nombres en mayúsculas: se pasan a capitalización normal.
+  # Las excepciones son configuración y no código porque dependen del idioma:
+  # `lowercaseWords` son las palabras llanas, que van en minúscula salvo cuando
+  # abren el título, y `keepUppercase` lo que se deja intacto (siglas, unidades).
+  # Las palabras con dígitos no se tocan nunca (`904`, `3.9`, `5`).
+  titleCase:
+    enabled: true
+    lowercaseWords: [de, del, la, las, el, los, y, e, i, da, do, das, dos, du, des, van, von, of, the]
+    keepUppercase: [DO, DOCa, DOP, IGP, IGT, AOC, AOP, DOC, DOCG, L, XL, BIB, S.A., S.L.]
+  # El formato del envase viene pegado al nombre ("... 75 cl."): se separa del
+  # título y se publica como opción de variante.
+  # Se aplican sin distinguir mayúsculas (el fichero trae `75 cl.` y `75 CL.`) y
+  # toleran el punto duplicado que deja el ERP (`... 75 cl..`).
+  extractFormat:
+    enabled: true
+    optionName: Formato
+    patterns:
+      - '(\d+(?:[.,]\d+)?)\s*(cl|ml|l)\.*\s*$'
+  # Valores del ERP para el flag de bloqueado.
+  blocked:
+    trueValues: ['Sí', 'Si', 'S', 'Yes']
+    falseValues: ['No', 'N', '']
+  # Filas que no se procesan nunca, por si el export trae ruido.
+  skipRows:
+    emptySku: true
+    negativeStock: false
+
+# ── Taxonomía ────────────────────────────────────────────────────────────────
+taxonomy:
+  # `Cód. grupo producto` → tipo de producto legible en Shopify (+ tags extra).
+  # Ojo: los códigos del ERP vienen truncados a 10 caracteres (`SIN ALCOHO`).
+  groups:
+    TINTO: { productType: Vino tinto }
+    BLANCO: { productType: Vino blanco }
+    ROSADO: { productType: Vino rosado }
+    DULCE: { productType: Vino dulce }
+    JEREZ: { productType: Vino generoso }
+    BRISAT: { productType: Vino brisat }
+    SIN ALCOHO: { productType: Vino sin alcohol, tags: [sin alcohol] }
+    # `EXTRANJERO` mezcla origen con color: se resuelve por país cuando lo haya.
+    EXTRANJERO: { productType: Vino de importación, tags: [importación] }
+    BOX: { productType: Estuche }
+    ESTUCHE: { productType: Estuche }
+    OTROS: { productType: Otros }
+  # `Tipo elaboración` → tags. Lo que no esté aquí se publica tal cual.
+  productionTypes:
+    ECOLOGICO: ecológico
+    NATURAL: vino natural
+    ORANGE WINE: orange wine
+    SIN ALCOHOL: sin alcohol
+  # Código de proveedor → nombre legible para el campo `vendor` de Shopify.
+  # Vacío: mientras no haya correspondencia, `vendor` se deja sin rellenar en
+  # lugar de publicar un código interno de la empresa.
+  suppliers: {}
+  # Denominación de origen: se publica como tag y, si existe, como metafield.
+  origin:
+    asTag: true
+    metafield: custom.denominacion_origen
+
+# ── Salida de la normalización ───────────────────────────────────────────────
+output:
+  # JSON con los productos normalizados: es lo que consumen las etapas 3, 4 y 5.
+  # `catalog_load` devuelve al modelo solo un resumen y escribe aquí el catálogo
+  # entero, porque 800 productos no caben en el resultado de una herramienta.
+  # Las rutas relativas cuelgan del directorio de ESTE fichero, no del directorio
+  # de trabajo de la sesión. Contiene costes y códigos de proveedor reales:
+  # `.artifacts/` está en `.gitignore`.
+  catalogJson: ./.artifacts/catalog.json
+  # JSON con los textos SEO que escribe `catalog_describe`, indexado por SKU. Va
+  # aparte del catálogo a propósito: la normalización es determinista y se
+  # rehace entera cada vez, así que mezclar aquí lo generado lo perdería en cada
+  # recarga. Se juntan por SKU cuando toque publicar.
+  seoJson: ./.artifacts/catalog-seo.json
+
+# ── 3. Descripción con IA ────────────────────────────────────────────────────
+# Sigue las nueve reglas de "SEO Product Descriptions: 7 Tips to Optimize Product
+# Pages" (shopify.com/enterprise/blog/seo-product-descriptions). El reparto es:
+# el modelo redacta, y `lib/seo.js` valida y rechaza contra lo que se declara
+# aquí. Si un borrador incumple, se le devuelven los problemas y reintenta.
+description:
+  language: es
+  # Tono comercial de la tienda. Es la instrucción que recibe el modelo.
+  tone: >-
+    Cercano y sobrio, de tienda especializada. Sin superlativos ni lenguaje de
+    catálogo publicitario.
+  # A quién le habla la ficha. El punto 1 del artículo ("escribe para el
+  # comprador, no para el buscador") no se puede cumplir sin esto.
+  audience: >-
+    Alguien que compra vino para beber en casa y agradece que le digan qué es y
+    para qué momento sirve, sin lenguaje de sumiller.
+
+  # Longitudes por campo. Los metadatos las tienen porque el buscador los
+  # recorta; el cuerpo la tiene por la tienda, no por SEO: el punto 5 del
+  # artículo dice expresamente que no hay una longitud correcta fija.
+  seoTitle:
+    maxChars: 60
+  seoDescription:
+    minChars: 70
+    maxChars: 155
+  bodyHtml:
+    maxChars: 700
+    # Punto 6, "escaneable en móvil": un párrafo de entrada corto y luego
+    # bullets, en vez de un bloque de texto.
+    leadMaxWords: 40
+    bullets:
+      min: 3
+      max: 5
+      maxChars: 90
+    # Etiquetas permitidas en el cuerpo. Lo que no esté aquí se rechaza.
+    allowTags: [p, ul, li, strong, em]
+  altText:
+    # Punto 4: describe lo que se ve en la imagen, en lenguaje llano. No es un
+    # sitio donde meter keywords.
+    maxChars: 125
+  feedDescription:
+    # Punto 8: el feed de Merchant Center es un campo distinto del de la ficha.
+    maxChars: 500
+  handle:
+    maxChars: 70
+
+  # Atributos que el modelo puede usar. Solo lo que viene del fichero: nada más.
+  # `volumeMl` no está a propósito: `format` ya dice la medida, y darle las dos
+  # invita a escribir «75 cl» y «750 ml» en la misma ficha.
+  fields: [title, productType, origin, productionType, countryCode, format]
+  # De dónde salen las keywords. El punto 3 pide investigación con volumen y
+  # dificultad (Semrush o similar) y no tenemos esa fuente: se derivan de lo que
+  # el fichero dice del producto, que al menos es cierto. Si algún día hay
+  # research de verdad, entra por aquí.
+  keywordsFrom: [productType, origin, format, productionType]
+
+  # Reglas duras: el modelo no puede inventar lo que el fichero no dice.
+  forbid:
+    - notas de cata, aromas o maridajes que no estén en los datos
+    - añadas, graduación o variedades de uva no presentes en el fichero
+    - premios, puntuaciones y comparaciones con otras bodegas
+  # Lo anterior es una instrucción; esto es lo que el código comprueba de verdad.
+  # Cada patrón que encaje tumba el borrador. Se compilan sin distinguir
+  # mayúsculas (JavaScript no admite el flag inline `(?i)` en el patrón).
+  forbidPatterns:
+    # Una añada que el fichero no trae.
+    - '\b(?:19|20)\d{2}\b'
+    # Graduación inventada.
+    - '\d+([.,]\d+)?\s*(?:%|grados?|º)'
+    # Premios y puntuaciones (punto "boilerplate y afirmaciones sin respaldo").
+    - '\b(premio|medalla|galard[oó]n|parker|peñ[ií]n|\d+\s*puntos)\b'
+  # Punto 8: los feeds de Merchant Center quieren datos de producto, no promoción.
+  forbidPhrases:
+    - envío gratis
+    - mejor precio
+    - oferta limitada
+    - última unidades
+    - no te lo pierdas
+    - imperdible
+    - precio inmejorable
+    - la mejor relación calidad-precio
+  # Contra el keyword stuffing: ninguna keyword puede aparecer más veces que esto
+  # en el cuerpo de la ficha.
+  maxKeywordRepeats: 3
+
+  # ── La llamada al modelo ───────────────────────────────────────────────────
+  # Redactar una ficha no necesita razonamiento alto, y ponerlo alto es
+  # contraproducente: el modelo se gasta el presupuesto de salida pensando y no
+  # escribe nada. Pasó de verdad, con `deepseek-v4-flash` y `reasoningEffort:
+  # high` en la sesión: ocho borradores seguidos con cero caracteres de texto.
+  # Con cientos de productos es además el mayor ahorro de tiempo de la etapa.
+  reasoningEffort: low
+  # Techo de tokens de la respuesta. La ficha entera ronda los 500, así que esto
+  # es un seguro contra una respuesta desbocada, no un límite que deba apretar.
+  maxTokens: 4000
+  # Sin valor: manda el proveedor. Bájalo si las fichas salen demasiado dispares.
+  # temperature: 0.7
+
+  # Intentos por producto antes de darlo por fallido. El primero es el borrador;
+  # los siguientes reciben la lista de problemas que hay que corregir.
+  maxAttempts: 3
+  # Cuántos productos se redactan a la vez. El bucle era secuencial y 4 productos
+  # tardaban 204 segundos medidos: con esto son 4 llamadas simultáneas.
+  # El primero del lote siempre va solo, para que un fallo de configuración se
+  # detecte con tres llamadas y no con un lote entero. Súbelo si el proveedor
+  # aguanta; bájalo a 1 si empiezan los errores de rate limit.
+  concurrency: 4
+  # Techo de productos por llamada, para que un `limit` grande no se convierta en
+  # una factura sorpresa.
+  maxPerCall: 50
+
+  # Con qué modelo se redacta. Sin esto usa el de la sesión de dsh, que es lo
+  # normal. Fíjalos si quieres charlar con un modelo rápido y escribir las fichas
+  # con otro que siga mejor las restricciones de formato: cada intento fallido es
+  # una llamada entera, así que un modelo que acierta a la primera puede salir
+  # más barato aunque cueste más por llamada. Mira `intentosMedios` y `rechazos`
+  # en la salida de `catalog_describe` antes de decidir.
+  # provider: deepseek-official
+  # model: deepseek-v4-pro
+  # `missing` = solo los productos que aún no tienen descripción; `always`
+  # rescribe todo en cada carga; `never` no toca ninguna.
+  regenerate: missing
+
+# ── 4. Imagen ────────────────────────────────────────────────────────────────
+image:
+  # Primero se busca una foto real del producto.
+  search:
+    enabled: true
+    minWidth: 800
+    minHeight: 800
+    # Solo imágenes con licencia utilizable; el resto se descarta.
+    requireUsableLicense: true
+  # Si no hay ninguna usable, se genera una nueva coherente con la ficha.
+  generate:
+    enabled: true
+    when: no-usable-photo
+    size: 1024x1024
+    style: >-
+      Botella sobre fondo neutro claro, luz suave de estudio, encuadre frontal
+      centrado, sin texto ni etiquetas legibles inventadas.
+  regenerate: missing
+  # Carpeta local donde se guardan las imágenes antes de subirlas.
+  outputDir: ./.artifacts/imagenes
+
+# ── 5. Publicación en Shopify ────────────────────────────────────────────────
+shopify:
+  storeDomain: mi-tienda.myshopify.com
+  apiVersion: '2026-07'
+  # Localización de inventario contra la que se escribe el stock.
+  locationId: ''
+  # El token va en `.env`, nunca aquí: aquí solo el nombre de la variable.
+  tokenEnv: SHOPIFY_ADMIN_TOKEN
+  # El SKU es la clave: si ya existe se actualiza el producto, no se duplica.
+  matchBy: sku
+  write:
+    price: always
+    cost: always
+    # `onChange`: solo se escribe el stock que difiere del de Shopify.
+    stock: onChange
+    description: ifGenerated
+    image: ifGenerated
+  # Estado del producto en Shopify según el flag `Bloqueado` del ERP.
+  status:
+    blocked: draft
+    unblocked: active
+  # Qué hacer con lo que está en Shopify y ya no viene en el fichero.
+  # `leave` no toca nada; alternativas: `draft`, `archive`.
+  missingInFile: leave
+  # Arranca en simulación: enseña el plan de cambios y no escribe nada.
+  # Ponerlo a `false` es una decisión consciente de la tienda.
+  dryRun: true
+  # Tamaño del lote y pausa entre lotes, para no chocar con el rate limit.
+  batchSize: 25
+  pauseMs: 1000
