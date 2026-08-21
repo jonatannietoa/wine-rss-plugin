@@ -1,12 +1,8 @@
 """Carga del `.env` del proyecto.
 
-Existe porque `agent.py` no importa deepeval y, por tanto, no hereda su carga
-automática de `.env`: deepeval lee el fichero del directorio de trabajo por su
-cuenta, pero el agente Python corre sin él.
-
 Se carga siempre el `.env` de la raíz del repo, no el del directorio desde el que
-se lance el comando, para que `python agent.py` funcione igual desde cualquier
-sitio.
+se lance el comando, para que `eval/eval_session.py` encuentre la clave del juez
+igual desde cualquier sitio.
 """
 
 from __future__ import annotations
@@ -22,7 +18,7 @@ def cargar_env(path: Path | None = None, *, override: bool = False) -> bool:
 
     :param path: fichero a leer; por defecto el `.env` de la raíz del repo.
     :param override: si pisar variables ya presentes en el entorno. Por defecto no,
-        para que un `DEEPSEEK_API_KEY=... python agent.py` puntual gane sobre el fichero.
+        para que una clave puntual pasada por la shell gane sobre el fichero.
     :returns: si se llegó a leer un fichero.
     """
     destino = path or ENV_PATH

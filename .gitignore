@@ -15,6 +15,10 @@ node_modules/
 npm-debug.log*
 .npm/
 
+# Artefactos del pipeline: el JSON normalizado y las imágenes generadas. Salen del
+# catálogo de producción, así que llevan costes y códigos de proveedor reales.
+.artifacts/
+
 # Catálogos de producción: son datos reales de la tienda y NO se suben nunca.
 # El repo solo lleva el fixture anonimizado `catalogo.example.csv`.
 stock-rosas.csv

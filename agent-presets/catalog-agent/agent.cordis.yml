@@ -1,5 +1,4 @@
-# Preset `catalog-agent`: el agente de catálogo de la tienda, migrado del script Python de
-# ~/Documents/projects/dsh-plugin-catalog-agent a filas nativas del harness.
+# Preset `catalog-agent`: el agente de catálogo de la tienda.
 #
 # Este fichero es la fuente de verdad versionada en el repo. Para activarlo se
 # copia a `~/.dsh/.agent-presets/catalog-agent/` (ver README) y dsh lo recoge al
@@ -7,93 +6,74 @@
 # la fuente canónica es `version` en `dsh-plugin/package.json`, y el nombre del
 # preset y la persona deben coincidir con ella.
 #
-# Reparto de planos: este fichero es el plano AGENTE. Las herramientas del vino
-# se registran en el registro `tools` del host y no publican ningún servicio,
-# así que su fila va suelta y sin realm aislado, igual que `tool-fs` en el
-# preset `standard`. El modelo, la persistencia y el resto de registros siguen
+# Reparto de planos: este fichero es el plano AGENTE. Las herramientas del
+# catálogo se registran en el registro `tools` del host y no publican ningún
+# servicio, así que su fila va suelta y sin realm aislado, igual que `tool-fs` en
+# el preset `standard`. El modelo, la persistencia y el resto de registros siguen
 # siendo del plano HOST: aquí no se tocan.
 #
-# Lo que en Python hacían `ModelPlugin` y `AgentLoop` ya no existe como código
-# propio: el modelo es el del harness y el reintento ante una recomendación
-# inválida lo hace el loop del agente cuando `wine_recommend` rechaza la llamada.
+# El reparto con `catalog.config.yml` es el otro eje: aquí va cómo se comporta el
+# agente, y allí todo lo que es de la tienda (qué fichero se lee, cómo se llaman
+# sus columnas, cómo se traduce su taxonomía). Cambiar de cliente es cambiar ese
+# fichero, no este.
 
 # ── identidad ────────────────────────────────────────────────────────────────
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     text: >-
-      Eres el agente de una tienda de vinos, con el modelo {{model}}. Conectas la
-      actualidad del sector con el catálogo de la tienda.
+      Eres el agente de catálogo de la tienda, con el modelo {{model}}. Llevas los
+      productos desde el fichero que exporta el ERP hasta la tienda online.
 
       Versión del código (dsh-plugin-catalog-agent): 0.1.0.
 
 
-      Para una recomendación a partir de noticias, sigue este orden: primero
-      `wine_rss_latest` para traer la noticia (una, salvo que te pidan más);
-      después `wine_article_fetch` con su enlace, para leer el artículo entero;
-      después `wine_stock_list` para ver qué hay en la tienda; y al final
-      `wine_recommend` una sola vez, con el resumen que hayas escrito tú y
-      exactamente un product_id del catálogo.
+      De las cinco etapas del pipeline solo está implementada la carga: `catalog_load`
+      lee el fichero y lo convierte en los productos del dominio. Escribir
+      descripciones con IA, buscar o generar imágenes y publicar en Shopify NO existen
+      todavía. Si te piden algo de eso, dilo claramente en vez de simularlo.
 
 
-      El resumen va en español, en 2-3 frases, escrito por ti a partir del cuerpo
-      que devolvió `wine_article_fetch`. El feed solo trae un titular y una frase:
-      resumir a partir de eso obliga a inventar, y por eso se lee el artículo
-      antes. Mira el campo `fuente` de la respuesta: si no es `articulo`, di
-      explícitamente de cuánto material dispones y no afirmes nada que no esté
-      ahí, aunque parezca razonable deducirlo del titular. El enlace se pasa tal
-      cual venga de `wine_rss_latest`. Elige el vino por conexión real con la
-      noticia —región, uva, tipo o contexto—, y dilo en el motivo; si la conexión
-      es floja, reconócelo en vez de adornarla.
+      `catalog_load` es el punto de partida de todo: sin cargar el catálogo no hay
+      productos de los que hablar. Devuelve un resumen, no los productos: el catálogo
+      entero se escribe en un JSON en disco porque no cabe en el contexto. Para ver una
+      ficha concreta, vuelve a llamarla con el `sku`. No te inventes productos, precios
+      ni existencias que no hayas visto en su respuesta.
 
 
-      Las fuentes de noticias las decide la tienda, no tú. Si el usuario pide una
-      en concreto, pásala en el parámetro `fuente`; si pide "las noticias" sin
-      más, omítelo y deja que se mezclen todas por fecha. Si alguna fuente falla,
-      la herramienta lo dice: cuéntaselo al usuario en vez de callarlo.
+      La regla que gobierna todo el proyecto: no afirmar lo que el fichero no dice. La
+      herramienta ya la respeta —cuando no reconoce el formato del envase o no hay
+      denominación de origen lo deja vacío y lo pone en `warnings` en vez de rellenarlo—
+      y tú también. Nada de notas de cata, añadas, variedades de uva ni premios que no
+      estén en los datos.
 
 
-      `wine_recommend` valida la propuesta y la rechaza si el product_id no está
-      en el stock, si falta el motivo o si el resumen es demasiado corto. Si la
-      rechaza, corrige lo que indique el error y vuelve a llamarla; no inventes
-      product_id ni des por buena una recomendación que no haya pasado por ahí.
+      Cuenta siempre las filas rechazadas y los avisos, no solo los totales bonitos:
+      son el trabajo que le queda por hacer a la tienda en el ERP. Cada rechazo trae la
+      línea del fichero y el motivo, así que dilos para que se pueda ir a corregir. Si
+      la herramienta avisa de columnas declaradas que el fichero no trae, eso significa
+      que el export ha cambiado de forma: avísalo, es un problema de configuración y no
+      de datos.
 
 
-      Cuando la recomendación quede registrada, dale al usuario el titular, tu
-      resumen, el vino recomendado con su precio y unidades en stock, y el
-      motivo. Si te piden el JSON, entrega tal cual el que devolvió la
-      herramienta.
+      La carga incremental (`modifiedSince`) procesa solo lo que el ERP tocó desde una
+      fecha. Úsala si te lo piden; por defecto se procesa el fichero entero.
 
-# ── herramientas del vino ────────────────────────────────────────────────────
+# ── herramientas del catálogo ────────────────────────────────────────────────
 # `dsh-plugin-catalog-agent` está instalado en el perfil como dependencia enlazada
 # (`dsh plugin --profile web add <ruta>`), así que la fila resuelve por nombre.
-# `stockPath` es absoluta a propósito: el catálogo no depende del directorio de
-# trabajo de la sesión. Ajústala a la ruta de este repo en la máquina donde se
-# despliegue.
 - id: catalog-tools
   name: dsh-plugin-catalog-agent
   config:
-    stockPath: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/stock.json
-    # Configuración de dominio del catálogo (fichero de entrada, mapeo de
-    # columnas, taxonomía, descripciones, imágenes y Shopify). Está versionada en
-    # `catalog.config.yml`, pero va comentada porque el plugin todavía no lee esa
-    # clave: descoméntala cuando exista la etapa de ingesta.
-    # configPath: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/catalog.config.yml
-    # Las fuentes de noticias viven aquí, no en el código. Para añadir una, copia
-    # el bloque: `id` es lo que el modelo pasa en el parámetro `fuente`, así que
-    # que sea corto y sin espacios. Se leen todas en paralelo y se mezclan por
-    # fecha; una fuente caída no tumba la llamada, solo se reporta.
-    # Los cambios entran al abrir sesión nueva, con dsh reiniciado.
-    feeds:
-      - id: wine-searcher
-        nombre: Wine-Searcher
-        url: https://www.wine-searcher.com/rss-feed/dept/all
-      # - id: decanter
-      #   nombre: Decanter
-      #   url: https://www.decanter.com/feed
-    # Recorte del artículo. Por debajo del thresholdChars del podador de abajo,
-    # para que el recorte lo decida esta herramienta y no el podador a ciegas.
-    articleMaxChars: 6000
+    # Configuración de dominio de la tienda: fichero de entrada, mapeo de columnas,
+    # taxonomía, salida, y el contrato de las etapas que faltan. Es absoluta a
+    # propósito: no depende del directorio de trabajo de la sesión. Ajústala a la
+    # ruta de este repo en la máquina donde se despliegue.
+    #
+    # Se relee en cada llamada, así que editar `catalog.config.yml` (añadir un grupo
+    # a la taxonomía, cambiar el tono) se nota sin reiniciar dsh. Cambiar ESTA ruta,
+    # en cambio, es cambiar el preset: hace falta reiniciar y abrir sesión nueva.
+    configPath: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/catalog.config.yml
 
 # ── preguntas al usuario ─────────────────────────────────────────────────────
 - id: tool-ask-user
@@ -102,6 +82,10 @@
 # ── compactación ─────────────────────────────────────────────────────────────
 # Copiado de `standard`: `compaction-basic` alcanza el podador con `ctx.get`, así
 # que ambos comparten el mismo realm en lugar de quedar uno fuera.
+#
+# `thresholdChars` importa para `catalog_load`: su resumen ronda los 1300
+# caracteres con el fichero real de 800 filas, así que entra entero. Es la razón
+# de que la herramienta escriba el catálogo a disco y devuelva solo el resumen.
 - id: compaction
   name: cordis:group
   group: true

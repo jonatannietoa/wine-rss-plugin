@@ -1,6 +1,5 @@
-feedparser>=6.0
-requests>=2.31
-openai>=1.40
-python-dotenv>=1.0
+# Dependencias de `eval/eval_session.py`, lo único que queda en Python.
+# El plugin de dsh no usa nada de esto: corre en Node con las dependencias de
+# `dsh-plugin/package.json`.
 deepeval>=1.0
-pytest>=8.0
+python-dotenv>=1.0

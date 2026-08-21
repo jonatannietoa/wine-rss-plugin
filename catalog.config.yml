@@ -8,10 +8,10 @@
 # Aquí NO van claves ni tokens: esos viven en `.env` (ver `.env.example`) y se
 # referencian por nombre de variable de entorno.
 #
-# Estado: el plugin todavía no lee este fichero — ninguna etapa del pipeline está
-# implementada. Es la forma acordada de la configuración, y sirve de contrato para
-# implementarla. Se conectará añadiendo `configPath` a la fila del preset (está
-# comentado en `agent-presets/catalog-agent/agent.cordis.yml`).
+# Estado: el tool `catalog_load` lee de aquí los bloques `source`, `columns`,
+# `normalize`, `taxonomy` y `output` (etapas 1 y 2). Los bloques `description`,
+# `image` y `shopify` son todavía el contrato de las etapas 3, 4 y 5, que no
+# están implementadas y no leen nada de aquí.
 
 version: 1
 
@@ -57,16 +57,24 @@ columns:
   modifiedAt: Fecha últ. modificación
 
 normalize:
-  # El ERP manda los nombres en mayúsculas: se pasan a capitalización normal
-  # respetando siglas y denominaciones.
-  titleCase: true
+  # El ERP manda los nombres en mayúsculas: se pasan a capitalización normal.
+  # Las excepciones son configuración y no código porque dependen del idioma:
+  # `lowercaseWords` son las palabras llanas, que van en minúscula salvo cuando
+  # abren el título, y `keepUppercase` lo que se deja intacto (siglas, unidades).
+  # Las palabras con dígitos no se tocan nunca (`904`, `3.9`, `5`).
+  titleCase:
+    enabled: true
+    lowercaseWords: [de, del, la, las, el, los, y, e, i, da, do, das, dos, du, des, van, von, of, the]
+    keepUppercase: [DO, DOCa, DOP, IGP, IGT, AOC, AOP, DOC, DOCG, L, XL, BIB, S.A., S.L.]
   # El formato del envase viene pegado al nombre ("... 75 cl."): se separa del
   # título y se publica como opción de variante.
+  # Se aplican sin distinguir mayúsculas (el fichero trae `75 cl.` y `75 CL.`) y
+  # toleran el punto duplicado que deja el ERP (`... 75 cl..`).
   extractFormat:
     enabled: true
     optionName: Formato
     patterns:
-      - '(\d+(?:[.,]\d+)?)\s*(cl|ml|l)\.?\s*$'
+      - '(\d+(?:[.,]\d+)?)\s*(cl|ml|l)\.*\s*$'
   # Valores del ERP para el flag de bloqueado.
   blocked:
     trueValues: ['Sí', 'Si', 'S', 'Yes']
@@ -107,6 +115,16 @@ taxonomy:
   origin:
     asTag: true
     metafield: custom.denominacion_origen
+
+# ── Salida de la normalización ───────────────────────────────────────────────
+output:
+  # JSON con los productos normalizados: es lo que consumen las etapas 3, 4 y 5.
+  # `catalog_load` devuelve al modelo solo un resumen y escribe aquí el catálogo
+  # entero, porque 800 productos no caben en el resultado de una herramienta.
+  # Las rutas relativas cuelgan del directorio de ESTE fichero, no del directorio
+  # de trabajo de la sesión. Contiene costes y códigos de proveedor reales:
+  # `.artifacts/` está en `.gitignore`.
+  catalogJson: ./.artifacts/catalog.json
 
 # ── 3. Descripción con IA ────────────────────────────────────────────────────
 description:

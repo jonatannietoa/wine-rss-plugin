@@ -11,9 +11,14 @@
   "files": [
     "lib"
   ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "3.18.1"
+    "@deepseek-ai/schemastery": "3.18.1",
+    "csv-parse": "7.0.2",
+    "js-yaml": "5.3.0"
   }
 }

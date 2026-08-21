@@ -11,8 +11,8 @@ es donde dsh quiere la configuración («no hay un lenguaje de configuración ap
 un agente puede hacer es cambiar las filas que lo componen»). El primer caso real es un catálogo
 de vinos, pero el plugin no depende de eso.
 
-> El repositorio y algunos identificadores del código todavía se llaman `wine-*`; ver
-> [Renombrado](#renombrado) al final.
+> El proyecto viene de una iteración anterior que leía noticias RSS y recomendaba un vino; ese
+> código ya no está. Ver [Renombrado](#renombrado) al final.
 
 ## El pipeline
 
@@ -30,26 +30,21 @@ concreto (regenerar la descripción, cambiar la imagen, sincronizar solo stock y
 
 ## Estado actual
 
-De las cinco etapas **no hay ninguna implementada todavía**. Lo que hay hoy es el nombre, la
-configuración acordada y esta documentación; el código sigue siendo el de la iteración anterior
-del proyecto, un agente que leía noticias RSS del sector y recomendaba un producto del catálogo.
+Las dos primeras etapas están implementadas y son la herramienta `catalog_load`. El código de la
+iteración anterior del proyecto —un agente que leía noticias RSS del sector y recomendaba un
+producto— **se ha eliminado**: no había nada reutilizable para leer un CSV.
 
 | Pieza | Estado |
 |---|---|
-| Nombre del plugin, del paquete y del preset | ✅ genérico (`catalog-agent`) |
-| `catalog.config.yml` — configuración del dominio | ✅ creado, todavía no lo lee nadie |
-| `catalogo.example.csv` — fixture anonimizado | ✅ en el repo |
-| 1. Ingesta del fichero | ⛔ pendiente |
-| 2. Normalización a modelo de producto | ⛔ pendiente |
+| `catalog.config.yml` — configuración del dominio | ✅ la lee `catalog_load` |
+| `catalogo.example.csv` — fixture anonimizado | ✅ 22 filas, una por rareza del fichero real |
+| 1. Ingesta del fichero | ✅ `catalog_load` |
+| 2. Normalización a modelo de producto | ✅ `catalog_load` |
 | 3. Descripción con IA | ⛔ pendiente |
 | 4. Búsqueda + generación de imagen | ⛔ pendiente |
 | 5. Publicación en Shopify (productos, precios, stock) | ⛔ pendiente |
-| Herramientas `wine_rss_latest` / `wine_article_fetch` / `wine_stock_list` / `wine_recommend` | ⚠️ siguen en el código, con nombres de la iteración anterior |
-| Agente Python autónomo (`agent.py`) y sus evals | ⚠️ sigue funcionando por su cuenta, ver abajo |
-
-Aviso práctico: `stock.json`, el catálogo JSON que usaban `wine_stock_list` y `wine_recommend`, se
-ha borrado del repo (el catálogo real ahora es el CSV). Hasta que exista la ingesta, esas dos
-herramientas fallan al no encontrar el fichero que apunta `stockPath` en el preset.
+| Herramientas `wine_*` y agente Python `agent.py` | 🗑️ eliminadas |
+| `eval/eval_session.py` | ⚠️ conservado como esqueleto del futuro eval de sesiones; su extracción sigue siendo de la iteración anterior |
 
 ## El fichero de entrada
 
@@ -112,21 +107,102 @@ Dos reglas del fichero:
 La ruta de `source.path` es absoluta a propósito: el catálogo no depende del directorio de trabajo
 de la sesión. Para desarrollar, apúntala a `catalogo.example.csv`.
 
-Falta enchufarlo: el plugin todavía no lee este fichero, así que la clave `configPath` está
-**comentada** en la fila del preset. Se descomenta cuando exista la etapa de ingesta.
+El plugin lo recibe por `configPath`, y es lo único que la fila del preset necesita saber:
 
 ```yaml
 - id: catalog-tools
   name: dsh-plugin-catalog-agent
   config:
-    stockPath: /ruta/al/repo/stock.json
-    # configPath: /ruta/al/repo/catalog.config.yml
+    configPath: /ruta/al/repo/catalog.config.yml
 ```
+
+Se relee en **cada llamada**, así que retocar la taxonomía o el tono se nota sin reiniciar dsh.
+Cambiar la ruta sí es cambiar el preset. Las rutas relativas de dentro del fichero (como
+`output.catalogJson`) cuelgan del directorio del propio `catalog.config.yml`, no del directorio de
+trabajo de la sesión.
 
 Decisiones que siguen abiertas, y que hay que cerrar antes de implementar la etapa 5: si las
 descripciones e imágenes ya generadas se respetan o se rescriben en cargas posteriores (hoy
 `regenerate: missing`), y qué se hace con los productos que están en Shopify y ya no vienen en el
 fichero (hoy `missingInFile: leave`).
+
+## La herramienta `catalog_load`
+
+Es la etapa 1 y la 2 juntas: lee el fichero y devuelve los productos del dominio. No llama a
+ningún modelo — la normalización es determinista, y por eso se testea en vez de evaluarse.
+
+| Parámetro | Para qué |
+|---|---|
+| *(ninguno)* | Procesa el fichero que declara `source.path` |
+| `path` | Otro fichero. Si es relativo, cuelga del directorio de trabajo de la sesión |
+| `modifiedSince` | Fecha `aaaa-mm-dd`: solo lo que el ERP tocó desde entonces (carga incremental) |
+| `sku` | Devuelve además esa ficha ya normalizada, para comprobar cómo queda |
+
+**Escribe el catálogo en `output.catalogJson` y devuelve solo un resumen.** No es un detalle de
+implementación: 800 productos son unos 480 KB de JSON, y el podador del preset corta los resultados
+de herramienta a 8192 caracteres. El resumen del fichero real ocupa unos 1300, así que llega
+entero: totales, desglose por tipo de producto, recuento de avisos y las primeras filas rechazadas
+con su motivo y su línea.
+
+Así queda un producto:
+
+```json
+{
+  "sku": "000048",
+  "titleRaw": "ESPELT VAILET 75 cl.",
+  "title": "Espelt Vailet",
+  "format": "75 cl",
+  "volumeMl": 750,
+  "group": "BLANCO",
+  "productType": "Vino blanco",
+  "category": "VINO",
+  "origin": "Empordá",
+  "countryCode": null,
+  "productionType": null,
+  "tags": ["Empordá"],
+  "price": 7.5,
+  "cost": 4.455,
+  "stock": 23,
+  "blocked": false,
+  "supplierCode": "40000289",
+  "vendor": null,
+  "modifiedAt": "2026-04-10",
+  "warnings": [],
+  "row": 2
+}
+```
+
+Es un modelo **neutro, no la forma de Shopify**: `status`, los metafields y las variantes los
+compone la etapa 5 a partir de `blocked`, `origin` y `format`. Si el segundo cliente publica en
+otra plataforma, la normalización no se toca.
+
+### Rechazos y avisos
+
+La distinción es la decisión de diseño que importa. Se **rechaza** lo que hace el producto
+impublicable, y esas filas no entran en `items`: sin SKU, con un precio ilegible (el export real
+trae siete `#N/A`), con un stock que no es un número, o con un grupo que `taxonomy.groups` no
+declara — sin grupo no hay con qué categorizar. Cada rechazo lleva la línea del fichero y el
+motivo, para poder ir a corregirlo en el ERP.
+
+Se **avisa** de lo que solo deja la ficha incompleta: el campo queda a `null`, el producto se
+publica igual y el aviso viaja en `warnings`. Ahí caen las 29 filas del export real cuyo título no
+trae un formato reconocible (`MALAGA VIRGEN`, `BOX LA AURORA 15 L ETIQUETA VERDE`) —27 de ellas
+llegan a publicarse, las otras dos las tumba el precio—, las que no tienen denominación
+de origen, un coste ilegible o una fecha que no existe. La regla del proyecto es la misma en las
+cinco etapas: **lo que el fichero no dice, no se rellena**.
+
+Un flag `Bloqueado` con un valor que `normalize.blocked` no declara se trata como bloqueado, no
+como publicable: es la opción conservadora, porque el error contrario publica en la tienda algo que
+el ERP tenía retirado.
+
+### Contra el fichero real
+
+```
+total: 800   ok: 793   rechazados: 7 (los siete #N/A de precio)
+Vino tinto 405 · Vino blanco 215 · Vino de importación 58 · Vino rosado 55 · Vino dulce 36
+Vino sin alcohol 8 · Otros 7 · Estuche 6 · Vino brisat 2 · Vino generoso 1
+avisos: sinFormato 27 · sinOrigen 18
+```
 
 ## Arrancar dsh
 
@@ -160,7 +236,8 @@ El preset se elige por sesión en dsh, o se fija en `agent-presets.default` de
 | Dependencias del plugin (`dsh-plugin/package.json`) | `npm install` en `dsh-plugin/`, y reiniciar |
 | Nombre del paquete, o ruta del repo | `plugin --profile web remove <nombre-viejo>` + `add "$PWD/dsh-plugin"`, y reiniciar |
 | `agent.cordis.yml` o `preset.yml` | Copiarlos otra vez al preset desplegado y abrir sesión nueva; sin reiniciar |
-| `catalog.config.yml` | Nada todavía: el plugin no lo lee |
+| `catalog.config.yml` | Nada: se relee en cada llamada a `catalog_load` |
+| `dsh-plugin/lib/catalog.js` o `catalogo.example.csv` | `npm test` en `dsh-plugin/`, y reiniciar si tocaste el plugin |
 | `~/.dsh/skills/*/SKILL.md` | Nada: se recoge en caliente |
 
 La versión (`version` en `dsh-plugin/package.json`) tiene que coincidir con el `name` del preset y
@@ -177,8 +254,8 @@ cp .env.example .env   # y rellena lo que uses
 
 | Variable | Para qué |
 |---|---|
-| `DEEPSEEK_API_KEY` | modelo de `agent.py`; sin ella corre en modo mock. También es el juez de `eval_session.py` si no fuerzas otro |
-| `OPENAI_API_KEY` | juez de deepeval por defecto (`eval/test_wine_agent.py`) |
+| `DEEPSEEK_API_KEY` | juez de `eval_session.py` si no fuerzas otro con `--juez` |
+| `OPENAI_API_KEY` | juez de deepeval por defecto (`eval_session.py --juez openai`) |
 | `DEEPSEEK_MODEL_NAME` | modelo del juez DeepSeek; por defecto `deepseek-chat` |
 | `DEEPEVAL_TELEMETRY_OPT_OUT` | `1` para que deepeval no mande telemetría |
 | `SHOPIFY_ADMIN_TOKEN` | ⛔ pendiente: token de la Admin API de la tienda |
@@ -200,33 +277,35 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 ├── catalogo.example.csv      # fixture anonimizado (el CSV real es de producción y no se versiona)
 ├── dsh-plugin/               # el plugin nativo de dsh
 │   ├── package.json          # nombre, versión y dependencias del harness
-│   └── lib/index.js          # herramientas registradas en el registro `tools`
+│   ├── lib/index.js          # las herramientas registradas en el registro `tools`
+│   ├── lib/catalog.js        # etapas 1 y 2: leer el fichero y normalizar cada fila
+│   └── test/                 # tests de la normalización, con `node --test`
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
-├── agent.py                  # agente Python autónomo (iteración anterior)
-├── harness/                  # piezas del agente Python: herramientas, modelo, loop
-└── eval/                     # tests de deepeval y evaluación de sesiones reales
+├── harness/env.py            # carga del .env para lo que queda en Python
+├── eval/eval_session.py      # evaluación de sesiones reales de dsh (de la iteración anterior)
+└── .artifacts/               # salida del pipeline (en .gitignore: contiene datos reales)
 ```
 
-## El agente Python y las evals
+El reparto de `dsh-plugin/lib/` es a propósito: `catalog.js` es un módulo puro y determinista —no
+llama a ningún modelo, no toca la red y no escribe nada— y por eso se puede testear con un fixture
+sin levantar dsh. `index.js` es lo único que conoce el harness.
 
-`agent.py` es la versión autónoma de la iteración anterior: su propio modelo, su modo mock y su
-propio bucle de reintentos, sin depender del harness. Sigue funcionando por su cuenta y es lo que
-evalúan los tests de `eval/`.
+## Tests
+
+Las etapas 1 y 2 son deterministas, así que se prueban con el runner de Node contra el fixture
+anonimizado. No hacen falta claves ni red:
 
 ```bash
-pip install -r requirements.txt
-python agent.py                      # sin clave: modo mock determinista
-DEEPSEEK_API_KEY=sk-... python agent.py
+cd dsh-plugin && npm test          # node --test "test/*.test.js"
 ```
 
-Los tests de `eval/test_wine_agent.py` cubren cuatro casos: respuesta coherente que pasa la
-métrica, respuesta incoherente que la falla, métrica de exactitud con `threshold=0.80`, y un
-modelo simulado que responde incompleto para forzar el reintento del loop.
+Los 23 tests van uno por regla: las cinco maneras de escribir el formato del envase, los precios
+con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las cuatro causas de
+rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un cliente nuevo
+trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**
 
-```bash
-deepeval test run eval/test_wine_agent.py
-```
+## Las evals de sesiones
 
 `eval/eval_session.py` evalúa lo que de verdad corrió dentro de dsh: lee el log de una sesión,
 extrae cada llamada de la herramienta final y la puntúa contra el material que el agente tenía
@@ -246,9 +325,15 @@ hay una respuesta esperada contra la que comparar. El juez no tiene por qué ser
 `--modelo-juez` fuerzan uno concreto. Ojo con juzgar con el mismo modelo que generó la respuesta:
 es cómodo, pero un juez tiende a ser indulgente con su propia salida.
 
-Cuando las etapas del pipeline estén implementadas, estas evals hay que rehacerlas: lo que habrá
-que medir es la calidad de las descripciones y de las imágenes, y la corrección de lo publicado en
-Shopify. Y hay que hacerlo contra `catalogo.example.csv`, no contra el fichero de producción.
+⚠️ **Está a medio migrar**: su extracción sigue siendo la de la iteración anterior (busca llamadas
+a `wine_recommend` y valida contra un `stock.json` que ya no existe), así que hoy no puntúa nada de
+catálogo. Se conserva porque el esqueleto —leer el `session.jsonl` de dsh, incluido el `.zstd`
+comprimido, y puntuar con un juez— es lo que hará falta cuando haya algo que juzgar: la calidad de
+las descripciones de la etapa 3, las imágenes de la 4 y lo publicado en la 5. Nada de eso existe
+todavía, y la carga de catálogo no se evalúa con un juez porque es determinista: se testea.
+
+Cuando se rehaga, hay que hacerlo contra `catalogo.example.csv`, no contra el fichero de
+producción.
 
 ## Renombrado
 
@@ -265,7 +350,6 @@ Shopify. Y hay que hacerlo contra `catalogo.example.csv`, no contra el fichero d
 GitHub redirige las URLs del nombre viejo, así que un clon que se haya quedado atrás sigue
 funcionando. El redeploy en dsh ya está hecho: perfil, preset y `agent-presets.default`.
 
-Sigue pendiente de renombrar, porque toca código: los nombres de las herramientas
-(`wine_rss_latest`, `wine_article_fetch`, `wine_stock_list`, `wine_recommend`), el `User-Agent` del
-plugin, el texto de la persona del preset, los módulos de `harness/` y el fichero
-`eval/test_wine_agent.py`.
+Ya no queda nada pendiente de renombrar en el código: las herramientas `wine_*`, el agente Python
+y sus tests se han eliminado, y la persona del preset es la del agente de catálogo. Lo único que
+sigue hablando de la iteración anterior es `eval/eval_session.py`, conservado a propósito.
