@@ -1,0 +1,7 @@
+Nº,Descripción,Denominación Origen, Precio Venta tienda,Cód. país/región de origen,Tipo elaboración,Bloqueado,Inventario,Fecha últ. modificación,Nº proveedor,Cód. categoría producto,Cód. grupo producto,Último coste directo
+000101,EJEMPLO TINTO CRIANZA 75 cl.,RIOJA,"  9,50 € ",,,No,24,9/1/2026,40000001,VINO,TINTO,"5,85"
+000102,EJEMPLO BLANCO JOVEN 75 cl.,PENEDÉS,"  7,50 € ",,ECOLOGICO,No,12,16/1/2026,40000002,VINO,BLANCO,"4,455"
+000103,EJEMPLO ROSADO 75 cl.,NAVARRA,"  6,95 € ",,,No,8,25/2/2026,PRO000003,VINO,ROSADO,"3,90"
+000104,EJEMPLO IMPORTADO 75 cl.,,"  32,60 € ",FR,,No,4,26/6/2026,40000004,VINO,EXTRANJERO,"21,573"
+000105,EJEMPLO SIN ALCOHOL 75 cl.,CATALUÑA,"  8,95 € ",,SIN ALCOHOL,No,30,7/5/2026,PRO000005,VINO,SIN ALCOHO,"5,10"
+000106,EJEMPLO ESTUCHE 3 BOTELLAS,,"  45,00 € ",,,Sí,2,20/3/2026,40000006,VINO,BOX,"28,000"

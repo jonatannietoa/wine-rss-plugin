@@ -15,6 +15,14 @@ node_modules/
 npm-debug.log*
 .npm/
 
+# Catálogos de producción: son datos reales de la tienda y NO se suben nunca.
+# El repo solo lleva el fixture anonimizado `catalogo.example.csv`.
+stock-rosas.csv
+stock*.csv
+catalogo*.csv
+*-catalogo.csv
+!*.example.csv
+
 # Secretos y entorno
 .env
 .env.*

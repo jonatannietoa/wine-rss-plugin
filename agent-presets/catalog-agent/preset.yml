@@ -1,0 +1,6 @@
+name: Agente de catálogo (0.1.0)
+description: >-
+  Agente de catálogo: carga productos desde el fichero de la tienda, les escribe la
+  descripción y la imagen con IA y los publica en Shopify con sus precios y su stock. En
+  esta versión solo están activas las herramientas de la iteración anterior: noticias del
+  sector y recomendación de un producto del catálogo, validada contra el stock.

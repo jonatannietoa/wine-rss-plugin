@@ -1,0 +1,180 @@
+# Configuración de dominio del agente de catálogo (`dsh-plugin-catalog-agent`).
+#
+# Aquí vive TODO lo que es de la tienda y no del plugin: qué fichero se procesa,
+# cómo se llaman sus columnas, cómo se traduce su taxonomía, con qué tono se
+# escriben las descripciones y a qué tienda de Shopify se publica. Cambiar de
+# vertical, de ERP o de tienda es cambiar este fichero, no el código.
+#
+# Aquí NO van claves ni tokens: esos viven en `.env` (ver `.env.example`) y se
+# referencian por nombre de variable de entorno.
+#
+# Estado: el plugin todavía no lee este fichero — ninguna etapa del pipeline está
+# implementada. Es la forma acordada de la configuración, y sirve de contrato para
+# implementarla. Se conectará añadiendo `configPath` a la fila del preset (está
+# comentado en `agent-presets/catalog-agent/agent.cordis.yml`).
+
+version: 1
+
+# ── 1. Ingesta ───────────────────────────────────────────────────────────────
+source:
+  # Ruta absoluta a propósito: el catálogo no depende del directorio de trabajo
+  # de la sesión. El fichero real es de producción y está en `.gitignore`; para
+  # desarrollar, apunta a `catalogo.example.csv`, que es el fixture anonimizado.
+  path: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/stock-rosas.csv
+  format: csv
+  encoding: utf-8
+  delimiter: ','
+  # Formatos locales del export del ERP.
+  decimalSeparator: ','
+  thousandsSeparator: '.'
+  currencySymbol: '€'
+  dateFormat: d/M/yyyy
+  # La cabecera trae espacios de relleno (' Precio Venta tienda'): se recortan
+  # antes de comparar nombres de columna.
+  trimHeaders: true
+  # Carga incremental: procesar solo lo que cambió en el ERP desde la última
+  # ejecución. Con `enabled: false` se procesa el fichero entero.
+  incremental:
+    enabled: true
+    column: Fecha últ. modificación
+
+# ── 2. Normalización ─────────────────────────────────────────────────────────
+# Columna del fichero → campo del modelo interno de producto. Es el único punto
+# que conoce los nombres del ERP: cambiar de export es cambiar este bloque.
+columns:
+  sku: 'Nº'
+  title: Descripción
+  origin: Denominación Origen
+  price: Precio Venta tienda
+  cost: Último coste directo
+  stock: Inventario
+  countryCode: Cód. país/región de origen
+  productionType: Tipo elaboración
+  blocked: Bloqueado
+  supplierCode: Nº proveedor
+  category: Cód. categoría producto
+  group: Cód. grupo producto
+  modifiedAt: Fecha últ. modificación
+
+normalize:
+  # El ERP manda los nombres en mayúsculas: se pasan a capitalización normal
+  # respetando siglas y denominaciones.
+  titleCase: true
+  # El formato del envase viene pegado al nombre ("... 75 cl."): se separa del
+  # título y se publica como opción de variante.
+  extractFormat:
+    enabled: true
+    optionName: Formato
+    patterns:
+      - '(\d+(?:[.,]\d+)?)\s*(cl|ml|l)\.?\s*$'
+  # Valores del ERP para el flag de bloqueado.
+  blocked:
+    trueValues: ['Sí', 'Si', 'S', 'Yes']
+    falseValues: ['No', 'N', '']
+  # Filas que no se procesan nunca, por si el export trae ruido.
+  skipRows:
+    emptySku: true
+    negativeStock: false
+
+# ── Taxonomía ────────────────────────────────────────────────────────────────
+taxonomy:
+  # `Cód. grupo producto` → tipo de producto legible en Shopify (+ tags extra).
+  # Ojo: los códigos del ERP vienen truncados a 10 caracteres (`SIN ALCOHO`).
+  groups:
+    TINTO: { productType: Vino tinto }
+    BLANCO: { productType: Vino blanco }
+    ROSADO: { productType: Vino rosado }
+    DULCE: { productType: Vino dulce }
+    JEREZ: { productType: Vino generoso }
+    BRISAT: { productType: Vino brisat }
+    SIN ALCOHO: { productType: Vino sin alcohol, tags: [sin alcohol] }
+    # `EXTRANJERO` mezcla origen con color: se resuelve por país cuando lo haya.
+    EXTRANJERO: { productType: Vino de importación, tags: [importación] }
+    BOX: { productType: Estuche }
+    ESTUCHE: { productType: Estuche }
+    OTROS: { productType: Otros }
+  # `Tipo elaboración` → tags. Lo que no esté aquí se publica tal cual.
+  productionTypes:
+    ECOLOGICO: ecológico
+    NATURAL: vino natural
+    ORANGE WINE: orange wine
+    SIN ALCOHOL: sin alcohol
+  # Código de proveedor → nombre legible para el campo `vendor` de Shopify.
+  # Vacío: mientras no haya correspondencia, `vendor` se deja sin rellenar en
+  # lugar de publicar un código interno de la empresa.
+  suppliers: {}
+  # Denominación de origen: se publica como tag y, si existe, como metafield.
+  origin:
+    asTag: true
+    metafield: custom.denominacion_origen
+
+# ── 3. Descripción con IA ────────────────────────────────────────────────────
+description:
+  language: es
+  # Tono comercial de la tienda. Es la instrucción que recibe el modelo.
+  tone: >-
+    Cercano y sobrio, de tienda especializada. Sin superlativos ni lenguaje de
+    catálogo publicitario.
+  maxChars: 700
+  # Atributos que el modelo puede usar. Solo lo que viene del fichero: nada más.
+  fields: [title, productType, origin, productionType, countryCode, format]
+  # Reglas duras: el modelo no puede inventar lo que el fichero no dice.
+  forbid:
+    - notas de cata, aromas o maridajes que no estén en los datos
+    - añadas, graduación o variedades de uva no presentes en el fichero
+    - premios, puntuaciones y comparaciones con otras bodegas
+  # `missing` = solo los productos que aún no tienen descripción; `always`
+  # rescribe todo en cada carga; `never` no toca ninguna.
+  regenerate: missing
+
+# ── 4. Imagen ────────────────────────────────────────────────────────────────
+image:
+  # Primero se busca una foto real del producto.
+  search:
+    enabled: true
+    minWidth: 800
+    minHeight: 800
+    # Solo imágenes con licencia utilizable; el resto se descarta.
+    requireUsableLicense: true
+  # Si no hay ninguna usable, se genera una nueva coherente con la ficha.
+  generate:
+    enabled: true
+    when: no-usable-photo
+    size: 1024x1024
+    style: >-
+      Botella sobre fondo neutro claro, luz suave de estudio, encuadre frontal
+      centrado, sin texto ni etiquetas legibles inventadas.
+  regenerate: missing
+  # Carpeta local donde se guardan las imágenes antes de subirlas.
+  outputDir: ./.artifacts/imagenes
+
+# ── 5. Publicación en Shopify ────────────────────────────────────────────────
+shopify:
+  storeDomain: mi-tienda.myshopify.com
+  apiVersion: '2026-07'
+  # Localización de inventario contra la que se escribe el stock.
+  locationId: ''
+  # El token va en `.env`, nunca aquí: aquí solo el nombre de la variable.
+  tokenEnv: SHOPIFY_ADMIN_TOKEN
+  # El SKU es la clave: si ya existe se actualiza el producto, no se duplica.
+  matchBy: sku
+  write:
+    price: always
+    cost: always
+    # `onChange`: solo se escribe el stock que difiere del de Shopify.
+    stock: onChange
+    description: ifGenerated
+    image: ifGenerated
+  # Estado del producto en Shopify según el flag `Bloqueado` del ERP.
+  status:
+    blocked: draft
+    unblocked: active
+  # Qué hacer con lo que está en Shopify y ya no viene en el fichero.
+  # `leave` no toca nada; alternativas: `draft`, `archive`.
+  missingInFile: leave
+  # Arranca en simulación: enseña el plan de cambios y no escribe nada.
+  # Ponerlo a `false` es una decisión consciente de la tienda.
+  dryRun: true
+  # Tamaño del lote y pausa entre lotes, para no chocar con el rate limit.
+  batchSize: 25
+  pauseMs: 1000

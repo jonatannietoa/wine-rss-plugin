@@ -1,4 +1,0 @@
-name: Agente de vinos (0.1.0)
-description: >-
-  Agente de tienda de vinos: lee las noticias del feed RSS de Wine-Searcher, las resume y
-  recomienda un vino del stock, validando que el product_id exista en el catálogo.

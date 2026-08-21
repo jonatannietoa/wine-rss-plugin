@@ -14,10 +14,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
  * Las fuentes de noticias no están incrustadas aquí: se declaran en la fila del
  * preset, que es donde dsh quiere la configuración.
  *
- * @module dsh-plugin-wine-agent
+ * @module dsh-plugin-catalog-agent
  */
 
-export const name = 'wine-agent'
+export const name = 'catalog-agent'
 export const inject = ['tools']
 
 export const Config = z.object({
