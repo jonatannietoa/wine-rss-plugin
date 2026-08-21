@@ -22,7 +22,7 @@ import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { buildCatalog, listSources, loadConfig, resolveFromConfig } from './catalog.js'
-import { SEO_FIELDS, buildPrompt, parseDraft, validateDraft } from './seo.js'
+import { SEO_FIELDS, buildPrompt, parseBlocks, validateDraft } from './seo.js'
 
 export const name = 'catalog-agent'
 // `llm` es el modelo de la sesión: `catalog_describe` redacta con el que el
@@ -107,8 +107,8 @@ const DRAFT_SCHEMA = {
   },
 }
 
-/** Cuántos textos SEO caben en la respuesta del modelo, con margen. */
-const MAX_TOKENS_FICHA = 1500
+/** Cuánto de la respuesta cruda se guarda para poder diagnosticar un fallo. */
+const MAX_CRUDA = 500
 
 /**
  * Lee el almacén de textos SEO. No existir es lo normal la primera vez.
@@ -199,15 +199,27 @@ function yaUsados(items, excluir = new Set()) {
  * @param dominio - la configuración cargada.
  * @param usados - handles y textos ya en uso.
  * @param signal - la señal de cancelación del tool.
- * @returns `{ draft }` si pasó, o `{ problemas }` con lo que falló en el último intento.
+ * @param problemasIniciales - lo que hay que corregir de entrada, cuando se
+ *   reintenta por haber chocado con otra ficha del mismo lote.
+ * @returns `{ draft }` si pasó, o `{ problemas }` con lo que falló en el último
+ *   intento; y en los dos casos `rechazos`, los códigos de lo que se rechazó.
  */
-async function redactar(ctx, modelo, product, dominio, usados, signal) {
-  const maxIntentos = dominio.description?.maxAttempts ?? 3
-  let problemas = []
+async function redactar(ctx, modelo, product, dominio, usados, signal, problemasIniciales = []) {
+  const d = dominio.description ?? {}
+  const maxIntentos = d.maxAttempts ?? 3
+  let problemas = problemasIniciales
+  let diagnostico = null
+  // Los códigos de todo lo que se rechazó por el camino, aunque al final salga
+  // bien: es lo único que dice qué regla está costando llamadas.
+  const rechazos = []
+  // Si ni un intento produjo un bloque aprovechable, el fallo no es de este
+  // producto: es del modelo o del prompt, y seguir con el lote es tirar llamadas.
+  let algunBloque = false
 
   for (let intento = 1; intento <= maxIntentos; intento += 1) {
-    const { system, user } = buildPrompt(product, dominio, problemas)
+    const { system, user } = buildPrompt(product, dominio, problemas.map((x) => x.message))
     let texto = ''
+    let razonamiento = 0
     for await (const trozo of ctx.llm.stream({
       provider: modelo.provider,
       model: modelo.model,
@@ -216,21 +228,45 @@ async function redactar(ctx, modelo, product, dominio, usados, signal) {
         content: [{ type: 'text', text: user }],
         source: { kind: 'plugin', plugin: name, contextForm: 'transient' },
       })],
-      maxTokens: MAX_TOKENS_FICHA,
+      // Redactar no necesita razonamiento alto, y ponerlo alto agota el
+      // presupuesto de salida antes de escribir nada.
+      reasoningEffort: d.reasoningEffort ?? 'low',
+      maxTokens: d.maxTokens ?? 4000,
+      ...(d.temperature === undefined ? {} : { temperature: d.temperature }),
       signal,
     })) {
       if (trozo.type === 'text-delta') texto += trozo.text
+      else if (trozo.type === 'reasoning-delta') razonamiento += trozo.text.length
+    }
+    diagnostico = {
+      caracteresTexto: texto.length,
+      caracteresRazonamiento: razonamiento,
+      respuestaCruda: texto.slice(0, MAX_CRUDA),
     }
 
     let draft
     try {
-      draft = parseDraft(texto)
+      draft = parseBlocks(texto)
     } catch (error) {
-      problemas = [error.message, 'Devuelve SOLO el objeto JSON, sin ningún texto alrededor.']
+      problemas = [{ code: 'sinBloques', message: error.message }]
+      // El síntoma que costó ocho borradores en blanco: todo el presupuesto en
+      // razonamiento y nada escrito. Decirlo con nombre ahorra el diagnóstico.
+      if (texto.length === 0 && razonamiento > 0) {
+        problemas.push({
+          code: 'sinTexto',
+          message: `el modelo gastó ${razonamiento} caracteres razonando y no escribió nada: `
+            + 'sube `description.maxTokens` o baja `description.reasoningEffort`',
+        })
+      } else {
+        problemas.push({ code: 'ayuda', message: 'Empieza directamente por "### seoTitle", sin texto alrededor.' })
+      }
+      rechazos.push(...problemas.map((x) => x.code))
       continue
     }
+    algunBloque = true
 
     problemas = validateDraft(draft, product, dominio, usados)
+    rechazos.push(...problemas.map((x) => x.code))
     if (problemas.length === 0) {
       return {
         draft: {
@@ -241,11 +277,53 @@ async function redactar(ctx, modelo, product, dominio, usados, signal) {
           model: `${modelo.provider}/${modelo.model}`,
           attempts: intento,
         },
+        rechazos,
       }
     }
   }
 
-  return { problemas }
+  return { problemas, diagnostico, rechazos, sistemico: !algunBloque }
+}
+
+/**
+ * Reserva el handle y los textos de una ficha para que ninguna otra los repita.
+ * @param draft - la ficha aceptada.
+ * @param usados - los conjuntos compartidos.
+ */
+function reservar(draft, usados) {
+  usados.handles.add(draft.handle)
+  for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
+    usados.textos.add(`${campo}:${draft[campo]}`)
+  }
+}
+
+/**
+ * Si una ficha choca con otra aceptada mientras se generaba en paralelo.
+ *
+ * Los productos de un lote se redactan a la vez contra la misma foto de lo ya
+ * usado, así que dos pueden elegir el mismo handle sin que ninguno lo sepa. Esto
+ * se comprueba al aceptar, que es cuando ya hay un orden.
+ * @param draft - la ficha a aceptar.
+ * @param usados - los conjuntos, ya con las fichas aceptadas antes que esta.
+ * @returns los problemas de unicidad, o lista vacía.
+ */
+function choca(draft, usados) {
+  const problemas = []
+  if (usados.handles.has(draft.handle)) {
+    problemas.push({
+      code: 'handleDuplicado',
+      message: `handle "${draft.handle}" ya lo tiene otro producto de este mismo lote, y la URL tiene que ser única`,
+    })
+  }
+  for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
+    if (usados.textos.has(`${campo}:${draft[campo]}`)) {
+      problemas.push({
+        code: 'textoDuplicado',
+        message: `${campo} es idéntico al de otro producto de este mismo lote; cada ficha tiene que ser distinta`,
+      })
+    }
+  }
+  return problemas
 }
 
 /**
@@ -407,19 +485,31 @@ export function apply(ctx, config) {
   ctx.tools.register(defineTool({
     name: 'catalog_sources',
     description:
-      'Lista los ficheros de catálogo que hay en la bandeja de entrada de la tienda, con cuántas filas '
+      'Lista los ficheros de catálogo que hay en las bandejas de entrada de la tienda, con cuántas filas '
       + 'traen y si su cabecera encaja con el mapeo de columnas configurado. Úsala cuando el usuario '
       + 'quiera cargar «otro» fichero, o no sepa cuál hay, o cuando te dé un nombre que no encuentres: '
       + 'así elige sobre lo que existe de verdad en vez de teclear una ruta a ciegas. Para cargar uno, '
-      + 'pásale su nombre a catalog_load en `path`.',
+      + 'pásale su nombre a catalog_load en `path`. Si el fichero que busca el usuario no aparece, es que '
+      + 'está fuera de estas carpetas: pídele la ruta, o que lo mueva a una de ellas.',
     parameters: {},
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          dir: { ...nulable('string'), required: true, description: 'La bandeja de entrada configurada.' },
-          existe: { type: 'boolean', required: true, description: 'Si ese directorio existe.' },
+          dirs: {
+            type: 'array',
+            required: true,
+            description: 'Las bandejas configuradas, y si existen en disco.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                dir: { type: 'string', required: true },
+                existe: { type: 'boolean', required: true },
+              },
+            },
+          },
           habitual: { type: 'string', required: true, description: 'El catálogo que se carga si no se pide otro.' },
           files: {
             type: 'array',
@@ -429,6 +519,7 @@ export function apply(ctx, config) {
               additionalProperties: false,
               properties: {
                 name: { type: 'string', required: true },
+                dir: { type: 'string', required: true },
                 path: { type: 'string', required: true },
                 bytes: { type: 'integer', required: true },
                 modifiedAt: { type: 'string', required: true },
@@ -442,22 +533,26 @@ export function apply(ctx, config) {
       },
       render: (_args, value) => {
         const partes = []
-        if (!value.existe) {
+        if (value.files.length === 0) {
+          const sinCrear = value.dirs.filter((d) => !d.existe).map((d) => d.dir)
           partes.push(
-            `La bandeja de entrada (${value.dir ?? 'sin configurar'}) no existe todavía. Créala y deja ahí `
-            + 'los ficheros que quieras cargar.',
+            'No hay ningún fichero en las bandejas de entrada'
+            + `${value.dirs.length > 0 ? `: ${value.dirs.map((d) => d.dir).join(', ')}` : ' (ninguna configurada)'}.`
+            + `${sinCrear.length > 0 ? ` Sin crear todavía: ${sinCrear.join(', ')}.` : ''}`,
           )
-        } else if (value.files.length === 0) {
-          partes.push(`No hay ningún fichero en la bandeja de entrada (${value.dir}).`)
         } else {
-          partes.push(
-            `En ${value.dir}:\n` + value.files
-              .map((f) => `  ${f.compatible ? '✓' : '✗'} ${f.name}`
-                + `${f.rows === null ? '' : ` — ${f.rows} filas`}`
-                + ` — modificado ${f.modifiedAt}`
-                + `${f.problema ? `\n      ${f.problema}` : ''}`)
-              .join('\n'),
-          )
+          for (const { dir } of value.dirs) {
+            const suyos = value.files.filter((f) => f.dir === dir)
+            if (suyos.length === 0) continue
+            partes.push(
+              `En ${dir}:\n` + suyos
+                .map((f) => `  ${f.compatible ? '✓' : '✗'} ${f.name}`
+                  + `${f.rows === null ? '' : ` — ${f.rows} filas`}`
+                  + ` — modificado ${f.modifiedAt}`
+                  + `${f.problema ? `\n      ${f.problema}` : ''}`)
+                .join('\n'),
+            )
+          }
         }
         partes.push(`El catálogo habitual de la tienda, si no se pide otro, es ${value.habitual}.`)
         return [{ type: 'text', text: partes.join('\n\n') }]
@@ -466,10 +561,9 @@ export function apply(ctx, config) {
     isConcurrencySafe: () => true,
     async execute() {
       const dominio = loadConfig(config.configPath)
-      const { dir, existe, files } = listSources(dominio)
+      const { dirs, files } = listSources(dominio)
       return {
-        dir,
-        existe,
+        dirs,
         habitual: resolveFromConfig(dominio, dominio.source.path),
         files,
       }
@@ -525,6 +619,23 @@ export function apply(ctx, config) {
           solicitados: { type: 'integer', required: true },
           generados: { type: 'integer', required: true },
           fallidos: { type: 'integer', required: true },
+          cortado: {
+            type: 'integer',
+            required: true,
+            description: 'Productos que no se intentaron porque el fallo era del modelo, no de los datos.',
+          },
+          llamadas: { type: 'integer', required: true, description: 'Llamadas al modelo que ha costado el lote.' },
+          intentosMedios: {
+            type: 'number',
+            required: true,
+            description: 'Intentos por ficha escrita. Cerca de 1 es lo bueno; cerca de 3 significa que el modelo pelea con las reglas.',
+          },
+          rechazos: {
+            type: 'array',
+            required: true,
+            description: 'Qué reglas han rechazado borradores y cuántas veces. Es lo que dice qué optimizar.',
+            items: recuento('code'),
+          },
           pendientes: { type: 'integer', required: true, description: 'Productos del catálogo que siguen sin ficha.' },
           sinRevisar: { type: 'integer', required: true, description: 'Fichas generadas que nadie ha revisado aún.' },
           fallos: {
@@ -537,6 +648,9 @@ export function apply(ctx, config) {
               properties: {
                 sku: { type: 'string', required: true },
                 problemas: { type: 'array', required: true, items: { type: 'string' } },
+                caracteresTexto: { type: 'integer', required: true, description: 'Cuánto texto devolvió el modelo en el último intento.' },
+                caracteresRazonamiento: { type: 'integer', required: true, description: 'Cuánto razonó. Mucho aquí y cero arriba significa presupuesto agotado pensando.' },
+                respuestaCruda: { type: 'string', required: true, description: 'El principio de lo que devolvió, para poder verlo.' },
               },
             },
           },
@@ -566,16 +680,35 @@ export function apply(ctx, config) {
           }]
         }
         const partes = [
-          `${value.generados} de ${value.solicitados} fichas escritas con ${value.modelo}.`
+          `${value.generados} de ${value.solicitados} fichas escritas con ${value.modelo}`
+          + ` en ${value.llamadas} ${value.llamadas === 1 ? 'llamada' : 'llamadas'} al modelo`
+          + `${value.intentosMedios > 0 ? ` (${value.intentosMedios} intentos por ficha)` : ''}.`
           + `${value.fallidos > 0 ? ` ${value.fallidos} no pasaron la validación.` : ''}`,
           `Del catálogo cargado desde ${value.sourcePath}.`
           + ` Quedan ${value.pendientes} productos sin ficha. Sin revisar: ${value.sinRevisar}.`,
           `Guardado en ${value.outputPath}`,
         ]
+        if (value.cortado > 0) {
+          partes.push(
+            `He parado el lote: el primer producto falló sin que el modelo escribiera un solo bloque, `
+            + `así que el problema no es de los datos. Quedan ${value.cortado} sin intentar, y así se `
+            + 'ahorran otras tantas llamadas. Arregla lo de abajo y vuelve a lanzarlo.',
+          )
+        }
         if (value.fallos.length > 0) {
           partes.push('No pasaron la validación:\n' + value.fallos
-            .map((f) => `  ${f.sku}:\n${f.problemas.map((p) => `    - ${p}`).join('\n')}`)
+            .map((f) => `  ${f.sku} (devolvió ${f.caracteresTexto} caracteres de texto`
+              + `${f.caracteresRazonamiento > 0 ? ` y ${f.caracteresRazonamiento} de razonamiento` : ''}):\n`
+              + f.problemas.map((p) => `    - ${p}`).join('\n')
+              + `${f.respuestaCruda ? `\n    respuesta: "${f.respuestaCruda.slice(0, 200)}…"` : ''}`)
             .join('\n'))
+        }
+        if (value.rechazos.length > 0 && value.intentosMedios > 1.2) {
+          partes.push(
+            'Reglas que están costando llamadas:\n'
+            + value.rechazos.map((r) => `  ${r.code}: ${r.count}`).join('\n')
+            + '\nSi una domina, o se ajusta esa regla en `catalog.config.yml` o el modelo no la sigue bien.',
+          )
         }
         if (value.muestra.length > 0) {
           const ficha = value.muestra[0]
@@ -650,6 +783,10 @@ export function apply(ctx, config) {
           solicitados: objetivo.length,
           generados: 0,
           fallidos: 0,
+          cortado: 0,
+          llamadas: 0,
+          intentosMedios: 0,
+          rechazos: [],
           pendientes: pendientes.length,
           sinRevisar: Object.values(fichas).filter((f) => !f.reviewed).length,
           fallos: [],
@@ -658,32 +795,86 @@ export function apply(ctx, config) {
         }
       }
 
+      // Por defecto redacta con el modelo de la sesión, pero la tienda puede
+      // fijar otro: charlar con uno rápido y escribir las fichas con uno que
+      // siga mejor las restricciones de formato es una combinación razonable.
       const opciones = exec.agent?.options
-      if (!opciones?.provider || !opciones?.model) {
+      const modelo = {
+        provider: dominio.description?.provider ?? opciones?.provider,
+        model: dominio.description?.model ?? opciones?.model,
+      }
+      if (!modelo.provider || !modelo.model) {
         throw new Error(
           'no se ha podido averiguar el modelo de esta sesión, así que no hay con qué redactar. '
-          + 'Esta herramienta usa el modelo del agente: revisa la configuración del host.',
+          + 'Fija `description.provider` y `description.model` en la configuración, o revisa el host.',
         )
       }
-      const modelo = { provider: opciones.provider, model: opciones.model }
 
       const generadas = []
       const fallos = []
-      for (const product of objetivo) {
-        exec.signal.throwIfAborted()
-        const resultado = await redactar(ctx, modelo, product, dominio, usados, exec.signal)
+      const rechazos = []
+      let cortado = 0
+      let llamadas = 0
+
+      /** Acepta o registra el resultado de un producto. */
+      const asentar = (product, resultado) => {
+        rechazos.push(...(resultado.rechazos ?? []))
+        llamadas += resultado.draft?.attempts ?? (dominio.description?.maxAttempts ?? 3)
         if (resultado.draft) {
           fichas[product.sku] = resultado.draft
           generadas.push(resultado.draft)
-          usados.handles.add(resultado.draft.handle)
-          for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-            usados.textos.add(`${campo}:${resultado.draft[campo]}`)
+          reservar(resultado.draft, usados)
+          return
+        }
+        fallos.push({
+          sku: product.sku,
+          problemas: resultado.problemas.map((x) => x.message),
+          caracteresTexto: resultado.diagnostico?.caracteresTexto ?? 0,
+          caracteresRazonamiento: resultado.diagnostico?.caracteresRazonamiento ?? 0,
+          respuestaCruda: resultado.diagnostico?.respuestaCruda ?? '',
+        })
+      }
+
+      // El primero va solo: si el modelo no devuelve nada, el fallo es de
+      // configuración y para saberlo no hace falta gastar un lote entero.
+      const [cabeza, ...resto] = objetivo
+      exec.signal.throwIfAborted()
+      const primero = await redactar(ctx, modelo, cabeza, dominio, usados, exec.signal)
+      asentar(cabeza, primero)
+
+      if (primero.sistemico) {
+        cortado = resto.length
+      } else {
+        // El resto en paralelo, en trozos: es lo que convierte 4 productos en
+        // serie (204 s medidos) en 4 a la vez.
+        const concurrencia = Math.max(1, dominio.description?.concurrency ?? 4)
+        for (let inicio = 0; inicio < resto.length; inicio += concurrencia) {
+          exec.signal.throwIfAborted()
+          const trozo = resto.slice(inicio, inicio + concurrencia)
+          const resultados = await Promise.all(
+            trozo.map((product) => redactar(ctx, modelo, product, dominio, usados, exec.signal)),
+          )
+          // Se aceptan en orden, no a la vez: el trozo se redactó contra la
+          // misma foto de lo ya usado, así que dos fichas pueden haber elegido
+          // el mismo handle sin saberlo. Quien llega segundo lo repite.
+          for (const [indice, resultado] of resultados.entries()) {
+            const product = trozo[indice]
+            const colisiones = resultado.draft ? choca(resultado.draft, usados) : []
+            if (colisiones.length === 0) {
+              asentar(product, resultado)
+              continue
+            }
+            const reintento = await redactar(
+              ctx, modelo, product, dominio, usados, exec.signal, colisiones,
+            )
+            asentar(product, { ...reintento, rechazos: [...(resultado.rechazos ?? []), ...colisiones.map((x) => x.code)] })
           }
-        } else {
-          fallos.push({ sku: product.sku, problemas: resultado.problemas })
         }
       }
       guardarSeo(salida, fichas)
+
+      const cuenta = new Map()
+      for (const code of rechazos) cuenta.set(code, (cuenta.get(code) ?? 0) + 1)
 
       return {
         outputPath: salida,
@@ -692,6 +883,14 @@ export function apply(ctx, config) {
         solicitados: objetivo.length,
         generados: generadas.length,
         fallidos: fallos.length,
+        cortado,
+        llamadas,
+        intentosMedios: generadas.length === 0
+          ? 0
+          : Math.round((generadas.reduce((suma, f) => suma + f.attempts, 0) / generadas.length) * 100) / 100,
+        rechazos: [...cuenta]
+          .sort((a, b) => b[1] - a[1])
+          .map(([code, count]) => ({ code, count })),
         pendientes: catalog.items.filter((item) => !fichas[item.sku]).length,
         sinRevisar: Object.values(fichas).filter((ficha) => !ficha.reviewed).length,
         fallos: fallos.slice(0, 5),

@@ -13,7 +13,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { parse } from 'csv-parse/sync'
 import { load as loadYaml } from 'js-yaml'
 
@@ -67,24 +68,40 @@ export function loadConfig(configPath) {
 
 /**
  * Resuelve una ruta de la configuración. Las relativas cuelgan del directorio del
- * propio `catalog.config.yml`, no del directorio de trabajo de la sesión.
+ * propio `catalog.config.yml`, no del directorio de trabajo de la sesión, y `~`
+ * es el home del usuario.
  * @param config - la configuración cargada.
  * @param path - la ruta declarada.
  * @returns la ruta absoluta.
  */
 export function resolveFromConfig(config, path) {
-  return isAbsolute(path) ? path : resolve(config.baseDir ?? '.', path)
+  const texto = String(path ?? '')
+  if (texto === '~' || texto.startsWith(`~${sep}`) || texto.startsWith('~/')) {
+    return join(homedir(), texto.slice(1))
+  }
+  return isAbsolute(texto) ? texto : resolve(config.baseDir ?? '.', texto)
+}
+
+/**
+ * Las bandejas de entrada declaradas, ya resueltas.
+ *
+ * Acepta `dirs` (lista) y el `dir` de una sola carpeta que se usaba antes.
+ * @param config - la configuración cargada.
+ * @returns las rutas absolutas de las carpetas donde buscar.
+ */
+export function sourceDirs(config) {
+  const declaradas = config.source?.dirs ?? (config.source?.dir ? [config.source.dir] : [])
+  return declaradas.filter(Boolean).map((dir) => resolveFromConfig(config, dir))
 }
 
 /**
  * Resuelve qué fichero hay que leer a partir de lo que diga quien llama.
  *
  * dsh no admite adjuntar un CSV al chat, así que señalar la entrada es señalar un
- * fichero del disco. El orden va de lo más explícito a lo más cómodo:
- * una ruta absoluta se usa tal cual; una relativa con separadores cuelga del
- * directorio de trabajo de la sesión; y un nombre suelto se busca primero en la
- * bandeja de entrada (`source.dir`), donde con `pattern` basta el nombre sin
- * extensión.
+ * fichero del disco. El orden va de lo más explícito a lo más cómodo: una ruta
+ * absoluta se usa tal cual; una relativa con separadores cuelga del directorio de
+ * trabajo del proceso; y un nombre suelto se busca en las bandejas de
+ * `source.dirs`, en orden, donde con `pattern` basta el nombre sin extensión.
  * @param config - la configuración cargada.
  * @param entrada - lo que pidió quien llama, o nada para el fichero habitual.
  * @returns la ruta absoluta del fichero a leer.
@@ -95,15 +112,23 @@ export function resolveSourcePath(config, entrada) {
   if (isAbsolute(pedido)) return pedido
   if (pedido.includes(sep) || pedido.includes('/')) return resolve(pedido)
 
-  const bandeja = config.source.dir ? resolveFromConfig(config, config.source.dir) : null
-  if (bandeja) {
-    const extension = extname(config.source.pattern ?? '') || '.csv'
+  const extension = extname(config.source.pattern ?? '') || '.csv'
+  for (const bandeja of sourceDirs(config)) {
     for (const candidato of [pedido, `${pedido}${extension}`]) {
       const ruta = join(bandeja, candidato)
       if (existsSync(ruta)) return ruta
     }
   }
   return resolve(pedido)
+}
+
+/**
+ * Dónde se ha buscado un fichero que no se encontró, para poder decirlo.
+ * @param config - la configuración cargada.
+ * @returns las rutas consultadas, en orden.
+ */
+export function searchedIn(config) {
+  return [...sourceDirs(config), resolve('.')]
 }
 
 /**
@@ -128,47 +153,53 @@ function columnasQueFaltan(cabecera, config) {
  * @returns `{ dir, existe, files }`; cada fichero con sus filas y su compatibilidad.
  */
 export function listSources(config) {
-  const dir = config.source.dir ? resolveFromConfig(config, config.source.dir) : null
-  if (!dir || !existsSync(dir)) return { dir, existe: false, files: [] }
-
   const extension = extname(config.source.pattern ?? '') || '.csv'
+  const dirs = []
   const files = []
-  for (const nombre of readdirSync(dir).sort()) {
-    if (nombre.startsWith('.')) continue
-    const ruta = join(dir, nombre)
-    let info
-    try {
-      info = statSync(ruta)
-    } catch {
-      continue
-    }
-    if (!info.isFile()) continue
 
-    const fichero = {
-      name: nombre,
-      path: ruta,
-      bytes: info.size,
-      modifiedAt: info.mtime.toISOString().slice(0, 10),
-      rows: null,
-      compatible: false,
-      problema: null,
-    }
-    if (extname(nombre).toLowerCase() !== extension.toLowerCase()) {
-      fichero.problema = `no es un ${extension} (la configuración solo lee ${config.source.format})`
-    } else {
+  for (const dir of sourceDirs(config)) {
+    const existe = existsSync(dir)
+    dirs.push({ dir, existe })
+    if (!existe) continue
+
+    for (const nombre of readdirSync(dir).sort()) {
+      if (nombre.startsWith('.')) continue
+      const ruta = join(dir, nombre)
+      let info
       try {
-        const { rows } = readRows(config, ruta)
-        const faltan = columnasQueFaltan(Object.keys(rows[0]), config)
-        fichero.rows = rows.length
-        fichero.compatible = faltan.length === 0
-        if (faltan.length > 0) fichero.problema = `le faltan columnas: ${faltan.join(', ')}`
-      } catch (error) {
-        fichero.problema = error.message
+        info = statSync(ruta)
+      } catch {
+        continue
       }
+      if (!info.isFile()) continue
+
+      const fichero = {
+        name: nombre,
+        dir,
+        path: ruta,
+        bytes: info.size,
+        modifiedAt: info.mtime.toISOString().slice(0, 10),
+        rows: null,
+        compatible: false,
+        problema: null,
+      }
+      if (extname(nombre).toLowerCase() !== extension.toLowerCase()) {
+        fichero.problema = `no es un ${extension} (la configuración solo lee ${config.source.format})`
+      } else {
+        try {
+          const { rows } = readRows(config, ruta)
+          const faltan = columnasQueFaltan(Object.keys(rows[0]), config)
+          fichero.rows = rows.length
+          fichero.compatible = faltan.length === 0
+          if (faltan.length > 0) fichero.problema = `le faltan columnas: ${faltan.join(', ')}`
+        } catch (error) {
+          fichero.problema = error.message
+        }
+      }
+      files.push(fichero)
     }
-    files.push(fichero)
   }
-  return { dir, existe: true, files }
+  return { dirs, files }
 }
 
 /**
@@ -184,6 +215,12 @@ export function readRows(config, pathOverride) {
   try {
     texto = readFileSync(path, { encoding: config.source.encoding ?? 'utf8' })
   } catch (error) {
+    if (error.code === 'ENOENT' && pathOverride) {
+      throw new Error(
+        `no encuentro "${pathOverride}". He buscado en: ${searchedIn(config).join(', ')}. `
+        + 'Usa catalog_sources para ver qué hay, o pasa la ruta absoluta.',
+      )
+    }
     throw new Error(`no se pudo leer el catálogo en ${path}: ${error.message}`)
   }
 

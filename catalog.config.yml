@@ -21,13 +21,20 @@ source:
   # de la sesión. El fichero real es de producción y está en `.gitignore`; para
   # desarrollar, apunta a `catalogo.example.csv`, que es el fixture anonimizado.
   path: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/stock-rosas.csv
-  # Bandeja de entrada: donde se dejan los ficheros que se quieran cargar sin ser
-  # el habitual. `catalog_sources` lista lo que haya aquí, y `catalog_load` acepta
-  # un nombre suelto ("cliente-x.csv", o incluso "cliente-x") y lo busca en este
-  # directorio. dsh no admite adjuntar un CSV al chat —su capa de adjuntos es solo
-  # de imágenes—, así que dejar el fichero aquí es lo más parecido a subirlo.
-  # Contiene catálogos de clientes: está en `.gitignore`.
-  dir: ./entradas
+  # Bandejas de entrada: donde se buscan los ficheros que no son el habitual.
+  # `catalog_sources` recorre estas carpetas en orden y `catalog_load` acepta un
+  # nombre suelto ("cliente-x.csv", o incluso "cliente-x") y lo busca en ellas.
+  #
+  # dsh no admite adjuntar un CSV al chat —su capa de adjuntos es solo de
+  # imágenes—, así que dejar el fichero en una de estas carpetas es lo más
+  # parecido a subirlo. Y el plugin NO puede saber cuál es el directorio de la
+  # sesión de dsh (no lo expone ningún paquete del harness), así que si trabajas
+  # con una carpeta por cliente, decláralas aquí. Se admite `~`.
+  #
+  # `./entradas` está en `.gitignore` porque va a tener catálogos de clientes.
+  dirs:
+    - ./entradas
+    # - ~/Documents/Bodegas Rosas to Shopify
   pattern: '*.csv'
   format: csv
   encoding: utf-8
@@ -224,12 +231,40 @@ description:
   # en el cuerpo de la ficha.
   maxKeywordRepeats: 3
 
+  # ── La llamada al modelo ───────────────────────────────────────────────────
+  # Redactar una ficha no necesita razonamiento alto, y ponerlo alto es
+  # contraproducente: el modelo se gasta el presupuesto de salida pensando y no
+  # escribe nada. Pasó de verdad, con `deepseek-v4-flash` y `reasoningEffort:
+  # high` en la sesión: ocho borradores seguidos con cero caracteres de texto.
+  # Con cientos de productos es además el mayor ahorro de tiempo de la etapa.
+  reasoningEffort: low
+  # Techo de tokens de la respuesta. La ficha entera ronda los 500, así que esto
+  # es un seguro contra una respuesta desbocada, no un límite que deba apretar.
+  maxTokens: 4000
+  # Sin valor: manda el proveedor. Bájalo si las fichas salen demasiado dispares.
+  # temperature: 0.7
+
   # Intentos por producto antes de darlo por fallido. El primero es el borrador;
   # los siguientes reciben la lista de problemas que hay que corregir.
   maxAttempts: 3
+  # Cuántos productos se redactan a la vez. El bucle era secuencial y 4 productos
+  # tardaban 204 segundos medidos: con esto son 4 llamadas simultáneas.
+  # El primero del lote siempre va solo, para que un fallo de configuración se
+  # detecte con tres llamadas y no con un lote entero. Súbelo si el proveedor
+  # aguanta; bájalo a 1 si empiezan los errores de rate limit.
+  concurrency: 4
   # Techo de productos por llamada, para que un `limit` grande no se convierta en
   # una factura sorpresa.
   maxPerCall: 50
+
+  # Con qué modelo se redacta. Sin esto usa el de la sesión de dsh, que es lo
+  # normal. Fíjalos si quieres charlar con un modelo rápido y escribir las fichas
+  # con otro que siga mejor las restricciones de formato: cada intento fallido es
+  # una llamada entera, así que un modelo que acierta a la primera puede salir
+  # más barato aunque cueste más por llamada. Mira `intentosMedios` y `rechazos`
+  # en la salida de `catalog_describe` antes de decidir.
+  # provider: deepseek-official
+  # model: deepseek-v4-pro
   # `missing` = solo los productos que aún no tienen descripción; `always`
   # rescribe todo en cada carga; `never` no toca ninguna.
   regenerate: missing

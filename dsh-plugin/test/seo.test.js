@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { buildCatalog, loadConfig } from '../lib/catalog.js'
-import { buildPrompt, keywords, parseDraft, slugify, stripTags, validateDraft } from '../lib/seo.js'
+import { SEO_FIELDS, buildPrompt, keywords, parseBlocks, slugify, stripTags, validateDraft } from '../lib/seo.js'
 import { CONFIG, FIXTURE, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.js'
 
 const config = loadConfig(CONFIG)
@@ -40,11 +40,28 @@ const VALIDO = {
 /** El borrador válido con un campo cambiado. */
 const con = (cambios) => ({ ...VALIDO, ...cambios })
 
-/** Los problemas que encuentra la validación, con el catálogo vacío de fondo. */
-const problemas = (draft, product = TINTO, usados = {}) => validateDraft(draft, product, config, usados)
+/** Un borrador en el formato de bloques que devuelve el modelo. */
+const enBloques = (draft) => SEO_FIELDS.map((campo) => `### ${campo}\n${draft[campo]}`).join('\n\n')
+
+/** Los mensajes de los problemas, que es lo que se le devuelve al modelo. */
+const problemas = (draft, product = TINTO, usados = {}) =>
+  validateDraft(draft, product, config, usados).map((x) => x.message)
+
+/** Los códigos de los problemas, que es con lo que se cuenta qué regla rechaza. */
+const codigos = (draft, product = TINTO, usados = {}) =>
+  validateDraft(draft, product, config, usados).map((x) => x.code)
 
 test('el borrador de referencia pasa todas las reglas', () => {
   assert.deepEqual(problemas(VALIDO), [])
+})
+
+test('cada problema lleva un código estable, no solo un mensaje', () => {
+  // Sin código no se puede contar qué regla cuesta llamadas.
+  assert.deepEqual(codigos(con({ seoTitle: 'x'.repeat(61) })), ['largo:seoTitle'])
+  assert.deepEqual(codigos(con({ handle: 'MAL HANDLE' })), ['handleInvalido'])
+  const stuffing = '<p>Un vino tinto de Rioja.</p><ul><li>Vino tinto</li><li>Vino tinto</li>'
+    + '<li>Vino tinto</li><li>Vino tinto</li></ul>'
+  assert.ok(codigos(con({ bodyHtml: stuffing })).includes('stuffing'))
 })
 
 test('slugify deja un handle limpio y sin acentos', () => {
@@ -87,13 +104,37 @@ test('el prompt de un reintento lleva lo que hay que corregir', () => {
   assert.match(user, /80 caracteres/)
 })
 
-test('parseDraft aguanta que el modelo envuelva el JSON', () => {
-  const esperado = JSON.stringify(VALIDO)
-  assert.equal(parseDraft(esperado).handle, VALIDO.handle)
-  assert.equal(parseDraft('```json\n' + esperado + '\n```').handle, VALIDO.handle)
-  assert.equal(parseDraft('Aquí tienes la ficha:\n' + esperado + '\nEspero que sirva.').handle, VALIDO.handle)
-  assert.throws(() => parseDraft('lo siento, no puedo'), /ningún objeto JSON/)
-  assert.throws(() => parseDraft('{ roto'), /no es JSON válido/)
+test('parseBlocks saca los seis campos de los bloques', () => {
+  const leido = parseBlocks(enBloques(VALIDO))
+  for (const campo of SEO_FIELDS) assert.equal(leido[campo], VALIDO[campo], campo)
+})
+
+test('parseBlocks aguanta lo que el modelo añade de su cosecha', () => {
+  const bloques = enBloques(VALIDO)
+  // Un preámbulo antes del primer bloque.
+  assert.equal(parseBlocks(`Claro, aquí tienes la ficha:\n\n${bloques}`).handle, VALIDO.handle)
+  // Markdown de cercado alrededor.
+  assert.equal(parseBlocks('```\n' + bloques + '\n```').handle, VALIDO.handle)
+  // Cabeceras de otro nivel, con dos puntos, y alguna que no reconoce.
+  assert.equal(parseBlocks(bloques.replace('### handle', '#### Handle:')).handle, VALIDO.handle)
+  assert.equal(parseBlocks(`### notas\nlo que sea\n\n${bloques}`).seoTitle, VALIDO.seoTitle)
+})
+
+test('una respuesta truncada conserva lo que llegó completo', () => {
+  // Esto es lo que pasó de verdad: se cortó dentro del cuerpo.
+  const cortado = '### seoTitle\n' + VALIDO.seoTitle + '\n\n### bodyHtml\n<p>Un vino tinto de Rioja con paso por bar'
+  const leido = parseBlocks(cortado)
+  assert.equal(leido.seoTitle, VALIDO.seoTitle, 'lo completo se conserva')
+  assert.match(leido.bodyHtml, /^<p>Un vino tinto/, 'lo parcial también, para poder verlo')
+  assert.equal(leido.handle, '', 'lo que no llegó queda vacío')
+  // Y la validación pide exactamente lo que falta, que es lo que se le devuelve al modelo.
+  const faltan = problemas(leido).filter((p) => p.startsWith('falta '))
+  assert.deepEqual(faltan.sort(), ['falta altText', 'falta feedDescription', 'falta handle', 'falta seoDescription'])
+})
+
+test('una respuesta sin bloques dice qué llegó en su lugar', () => {
+  assert.throws(() => parseBlocks(''), /está vacía/)
+  assert.throws(() => parseBlocks('lo siento, no puedo'), /empieza por "lo siento, no puedo/)
 })
 
 test('exige los seis campos', () => {
@@ -200,12 +241,12 @@ test('la prueba en seco devuelve el prompt sin llamar al modelo', async () => {
   const { tools } = await conCatalogoCargado(simulado.llm)
   const resultado = await tools.catalog_describe.execute({ limit: 1, dryRun: true }, ejecucion())
   assert.equal(simulado.llamadas.length, 0, 'no debería haber llamado al modelo')
-  assert.match(resultado.prompt.system, /Responde SOLO con un objeto JSON/)
+  assert.match(resultado.prompt.system, /### seoTitle/)
   assert.equal(resultado.generados, 0)
 })
 
 test('catalog_describe escribe la ficha y la deja SIN revisar', async () => {
-  const simulado = llmSimulado([JSON.stringify(VALIDO)])
+  const simulado = llmSimulado([enBloques(VALIDO)])
   const { tools } = await conCatalogoCargado(simulado.llm)
   const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
 
@@ -225,8 +266,8 @@ test('catalog_describe escribe la ficha y la deja SIN revisar', async () => {
 })
 
 test('un borrador inválido se devuelve al modelo para que se corrija', async () => {
-  const malo = JSON.stringify(con({ seoTitle: 'x'.repeat(80) }))
-  const simulado = llmSimulado([malo, JSON.stringify(VALIDO)])
+  const malo = enBloques(con({ seoTitle: 'x'.repeat(80) }))
+  const simulado = llmSimulado([malo, enBloques(VALIDO)])
   const { tools } = await conCatalogoCargado(simulado.llm)
   const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
 
@@ -236,7 +277,7 @@ test('un borrador inválido se devuelve al modelo para que se corrija', async ()
 })
 
 test('si agota los intentos, lo reporta en vez de guardar basura', async () => {
-  const malo = JSON.stringify(con({ handle: 'MAL HANDLE' }))
+  const malo = enBloques(con({ handle: 'MAL HANDLE' }))
   const simulado = llmSimulado([malo, malo, malo, malo])
   const { tools } = await conCatalogoCargado(simulado.llm)
   const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
@@ -257,8 +298,142 @@ test('el tool falla claro si no sabe con qué modelo redactar', async () => {
   )
 })
 
+test('al modelo se le pasan el esfuerzo y el presupuesto de la configuración', async () => {
+  const simulado = llmSimulado([enBloques(VALIDO)])
+  const { tools } = await conCatalogoCargado(simulado.llm, (c) => {
+    c.description.reasoningEffort = 'low'
+    c.description.maxTokens = 4000
+  })
+  await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+
+  const llamada = simulado.llamadas[0]
+  // Esto es lo que falló en producción: 1500 cableado contra reasoningEffort high.
+  assert.equal(llamada.reasoningEffort, 'low')
+  assert.equal(llamada.maxTokens, 4000)
+  assert.equal(llamada.temperature, undefined, 'sin valor en la configuración, manda el proveedor')
+})
+
+test('un fallo sistémico corta el lote en vez de repetirlo por producto', async () => {
+  // El modelo no devuelve bloques nunca: es lo que pasó con reasoningEffort high.
+  const enBlanco = Array(12).fill('')
+  const { tools } = await conCatalogoCargado(llmSimulado(enBlanco).llm)
+  const resultado = await tools.catalog_describe.execute({ limit: 4 }, ejecucion())
+
+  assert.equal(resultado.generados, 0)
+  assert.equal(resultado.fallidos, 1, 'solo se intenta el primero')
+  assert.equal(resultado.cortado, 3, 'los otros tres no se tocan')
+  assert.match(resultado.fallos[0].problemas.join(' '), /está vacía/)
+})
+
+test('un fallo diagnosticable dice qué devolvió el modelo', async () => {
+  // Cero texto y mucho razonamiento: el síntoma exacto del presupuesto agotado.
+  const llamadas = []
+  const llm = {
+    async *stream(opciones) {
+      llamadas.push(opciones)
+      yield { type: 'reasoning-delta', index: 0, text: 'x'.repeat(1847) }
+    },
+  }
+  const { tools } = await conCatalogoCargado(llm)
+  const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+
+  const fallo = resultado.fallos[0]
+  assert.equal(fallo.caracteresTexto, 0)
+  assert.equal(fallo.caracteresRazonamiento, 1847)
+  assert.match(fallo.problemas.join(' '), /gastó 1847 caracteres razonando y no escribió nada/)
+  assert.match(fallo.problemas.join(' '), /maxTokens.*reasoningEffort/s)
+})
+
+test('un fallo de validación no corta el lote: ese sí es del producto', async () => {
+  // Devuelve bloques, pero con un handle inválido: el modelo funciona.
+  const malo = enBloques(con({ handle: 'MAL HANDLE' }))
+  const respuestas = [...Array(3).fill(malo), ...Array(3).fill(enBloques(VALIDO))]
+  const { tools } = await conCatalogoCargado(llmSimulado(respuestas).llm)
+  const resultado = await tools.catalog_describe.execute({ limit: 2 }, ejecucion())
+
+  assert.equal(resultado.cortado, 0, 'sigue con el siguiente producto')
+  assert.equal(resultado.fallidos, 1)
+  assert.equal(resultado.generados, 1)
+})
+
+test('el lote se redacta en paralelo, con el primero solo', async () => {
+  // Cada respuesta con handle distinto, para que no haya colisión.
+  const respuestas = ['a', 'b', 'c', 'd'].map((s) => enBloques(con({
+    handle: `ficha-${s}`,
+    seoDescription: `${VALIDO.seoDescription} Variante ${s} para que no se repita el texto.`,
+    feedDescription: `${VALIDO.feedDescription} Variante ${s}.`,
+    bodyHtml: VALIDO.bodyHtml.replace('paso por barrica', `paso por barrica ${s}`),
+  })))
+
+  const enVuelo = { ahora: 0, maximo: 0 }
+  const llm = {
+    async *stream() {
+      enVuelo.ahora += 1
+      enVuelo.maximo = Math.max(enVuelo.maximo, enVuelo.ahora)
+      await new Promise((listo) => setTimeout(listo, 20))
+      enVuelo.ahora -= 1
+      yield { type: 'text-delta', index: 0, text: respuestas.shift() ?? '' }
+    },
+  }
+  const { tools } = await conCatalogoCargado(llm, (c) => { c.description.concurrency = 3 })
+  const resultado = await tools.catalog_describe.execute({ limit: 4 }, ejecucion())
+
+  assert.equal(resultado.generados, 4)
+  assert.equal(resultado.llamadas, 4, 'una llamada por ficha, ninguna de más')
+  assert.equal(resultado.intentosMedios, 1)
+  // El primero va solo; los otros tres a la vez.
+  assert.equal(enVuelo.maximo, 3, `concurrencia observada: ${enVuelo.maximo}`)
+})
+
+test('dos fichas del mismo lote no pueden salir con el mismo handle', async () => {
+  // Las tres primeras respuestas son idénticas: en paralelo, ninguna sabe de las
+  // otras, así que la colisión hay que resolverla al aceptar.
+  const iguales = [enBloques(VALIDO), enBloques(VALIDO), enBloques(VALIDO)]
+  const distinta = enBloques(con({
+    handle: 'ficha-distinta',
+    seoDescription: `${VALIDO.seoDescription} Y esta es otra bien distinta de las demas.`,
+    bodyHtml: VALIDO.bodyHtml.replace('barrica', 'barrica nueva'),
+    feedDescription: `${VALIDO.feedDescription} Distinta.`,
+  }))
+  const { tools } = await conCatalogoCargado(
+    llmSimulado([...iguales, distinta, distinta, distinta]).llm,
+    (c) => { c.description.concurrency = 3 },
+  )
+  const resultado = await tools.catalog_describe.execute({ limit: 3 }, ejecucion())
+
+  const handles = Object.values(JSON.parse(readFileSync(resultado.outputPath, 'utf8')).items)
+    .map((f) => f.handle)
+  assert.equal(new Set(handles).size, handles.length, `handles repetidos: ${handles.join(', ')}`)
+  assert.ok(resultado.rechazos.some((r) => r.code === 'handleDuplicado'), 'la colisión se cuenta')
+})
+
+test('el recuento de rechazos dice qué regla cuesta las llamadas', async () => {
+  // Falla dos veces por el párrafo de entrada y acierta a la tercera.
+  const largo = enBloques(con({
+    bodyHtml: `<p>Un vino tinto ${'palabra '.repeat(45)}</p><ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>`,
+  }))
+  const { tools } = await conCatalogoCargado(llmSimulado([largo, largo, enBloques(VALIDO)]).llm)
+  const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+
+  assert.equal(resultado.generados, 1)
+  assert.equal(resultado.intentosMedios, 3)
+  assert.equal(resultado.llamadas, 3)
+  const entradaLarga = resultado.rechazos.find((r) => r.code === 'entradaLarga')
+  assert.equal(entradaLarga.count, 2, 'las dos veces que rechazó, contadas')
+})
+
+test('la tienda puede redactar con un modelo distinto al de la sesión', async () => {
+  const simulado = llmSimulado([enBloques(VALIDO)])
+  const { tools } = await conCatalogoCargado(simulado.llm, (c) => {
+    c.description.provider = 'deepseek-official'
+    c.description.model = 'deepseek-v4-pro'
+  })
+  await tools.catalog_describe.execute({ sku: '000101' }, ejecucion({ provider: 'otro', model: 'flash' }))
+  assert.equal(simulado.llamadas[0].model, 'deepseek-v4-pro', 'manda la configuración, no la sesión')
+})
+
 test('catalog_review es lo que convierte una ficha en publicable', async () => {
-  const simulado = llmSimulado([JSON.stringify(VALIDO)])
+  const simulado = llmSimulado([enBloques(VALIDO)])
   const { tools, configPath } = await conCatalogoCargado(simulado.llm)
   await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
 

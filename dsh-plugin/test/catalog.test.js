@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { buildCatalog, listSources, loadConfig, resolveSourcePath } from '../lib/catalog.js'
@@ -178,9 +179,9 @@ test('la bandeja de entrada dice qué hay y si sirve', () => {
   // Los ocultos no cuentan.
   writeFileSync(join(bandeja, '.DS_Store'), '', 'utf8')
 
-  const config = loadConfig(configTemporal((c) => { c.source.dir = bandeja }))
-  const { existe, files } = listSources(config)
-  assert.ok(existe)
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  const { dirs, files } = listSources(config)
+  assert.deepEqual(dirs, [{ dir: bandeja, existe: true }])
   assert.deepEqual(files.map((f) => f.name), ['cliente-ajeno.csv', 'cliente-bueno.csv', 'precios.xlsx'])
 
   const porNombre = new Map(files.map((f) => [f.name, f]))
@@ -192,16 +193,16 @@ test('la bandeja de entrada dice qué hay y si sirve', () => {
 })
 
 test('una bandeja que no existe no es un error, solo está vacía', () => {
-  const config = loadConfig(configTemporal((c) => { c.source.dir = '/no/existe/esta/ruta' }))
-  const { existe, files } = listSources(config)
-  assert.equal(existe, false)
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = ['/no/existe/esta/ruta'] }))
+  const { dirs, files } = listSources(config)
+  assert.deepEqual(dirs, [{ dir: '/no/existe/esta/ruta', existe: false }])
   assert.deepEqual(files, [])
 })
 
 test('basta el nombre del fichero si está en la bandeja, con extensión o sin ella', () => {
   const bandeja = temporal()
   writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
-  const config = loadConfig(configTemporal((c) => { c.source.dir = bandeja }))
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
 
   assert.equal(resolveSourcePath(config, 'cliente-x.csv'), join(bandeja, 'cliente-x.csv'))
   assert.equal(resolveSourcePath(config, 'cliente-x'), join(bandeja, 'cliente-x.csv'))
@@ -214,15 +215,40 @@ test('basta el nombre del fichero si está en la bandeja, con extensión o sin e
 test('catalog_load carga por nombre y dice de qué fichero salió', async () => {
   const bandeja = temporal()
   writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
-  const { catalog_load: tool } = registrar(configTemporal((c) => { c.source.dir = bandeja }))
+  const { catalog_load: tool } = registrar(configTemporal((c) => { c.source.dirs = [bandeja] }))
 
   const resultado = await tool.execute({ path: 'cliente-x' })
   assert.equal(resultado.sourcePath, join(bandeja, 'cliente-x.csv'))
   assert.equal(resultado.ok, 18)
 })
 
+test('busca en varias carpetas, en orden, y expande ~', () => {
+  const primera = temporal()
+  const segunda = temporal()
+  writeFileSync(join(segunda, 'solo-en-la-segunda.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [primera, segunda] }))
+
+  assert.equal(resolveSourcePath(config, 'solo-en-la-segunda'), join(segunda, 'solo-en-la-segunda.csv'))
+  const { dirs } = listSources(config)
+  assert.deepEqual(dirs.map((d) => d.dir), [primera, segunda])
+
+  // `~` es el home, no una carpeta llamada "~".
+  const conTilde = loadConfig(configTemporal((c) => { c.source.dirs = ['~/no-existe-esta-carpeta'] }))
+  assert.equal(listSources(conTilde).dirs[0].dir, join(homedir(), 'no-existe-esta-carpeta'))
+})
+
+test('cuando no encuentra un fichero dice dónde ha buscado', () => {
+  const bandeja = temporal()
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  assert.throws(
+    () => buildCatalog(config, { path: 'no-existe' }),
+    (error) => error.message.includes('He buscado en') && error.message.includes(bandeja)
+      && error.message.includes('catalog_sources'),
+  )
+})
+
 test('catalog_sources incluye el catálogo habitual, no solo la bandeja', async () => {
-  const { catalog_sources: tool } = registrar(configTemporal((c) => { c.source.dir = temporal() }))
+  const { catalog_sources: tool } = registrar(configTemporal((c) => { c.source.dirs = [temporal()] }))
   const resultado = await tool.execute({})
   assert.equal(resultado.habitual, FIXTURE)
   assert.deepEqual(resultado.files, [])

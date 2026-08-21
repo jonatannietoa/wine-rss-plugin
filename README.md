@@ -133,9 +133,21 @@ fichero (hoy `missingInFile: leave`).
 documentación lista los ficheros genéricos como trabajo pendiente. Así que «subir el catálogo» se
 resuelve por disco.
 
-La forma de hacerlo es la **bandeja de entrada**: el directorio que declara `source.dir`
+La forma de hacerlo son las **bandejas de entrada**: las carpetas que declara `source.dirs`
 (`./entradas` por defecto, en `.gitignore` porque va a tener catálogos de clientes). Se deja ahí el
 fichero y se elige por su nombre:
+
+```yaml
+source:
+  dirs:
+    - ./entradas
+    - ~/Documents/Bodegas Rosas to Shopify    # una carpeta por cliente
+```
+
+**Hay que declarar las carpetas de cliente.** El plugin no puede saber en qué directorio está
+trabajando la sesión de dsh: no está en `AgentOptions` ni lo expone ningún paquete del harness, y el
+`PWD` del proceso es este repo porque `./dsh.sh` lanza desde aquí. Si el fichero no está en una
+bandeja declarada, hay que pasar la ruta absoluta.
 
 ```
 tú:  ¿qué catálogos tengo?
@@ -160,7 +172,7 @@ cliente nuevo.
 | Lo que pasas | De dónde sale |
 |---|---|
 | nada | `source.path`, el catálogo habitual de la tienda |
-| `cliente-x.csv` o `cliente-x` | la bandeja de entrada (la extensión la pone `source.pattern`) |
+| `cliente-x.csv` o `cliente-x` | las bandejas de `source.dirs`, en orden (la extensión la pone `source.pattern`) |
 | `./otro/sitio/x.csv` | relativo al directorio donde arrancaste dsh |
 | `/ruta/absoluta.csv` | tal cual |
 
@@ -275,6 +287,26 @@ El plugin no trae cliente de IA ni pide una clave: inyecta el servicio `llm` de 
 proveedor y el modelo del agente (`exec.agent.options`). Cambias de modelo en dsh y cambia con
 quién se redacta, sin tocar nada.
 
+### Bloques, no JSON
+
+El modelo devuelve seis bloques con cabecera, no un objeto JSON:
+
+```
+### seoTitle
+Dido la Universal, vino tinto ecológico del Montsant
+
+### bodyHtml
+<p>Un vino tinto del Montsant de elaboración ecológica…</p>
+<ul><li>…</li></ul>
+```
+
+No es una preferencia estética. `GenerateOptions` de dsh **no expone modo JSON**, así que el formato
+es lo único que da robustez, y el HTML dentro de una cadena JSON era la parte frágil: había que
+escaparlo, y un corte a media cadena tiraba los seis campos. Con bloques no hay nada que escapar, y
+lo que llegó completo se conserva: la validación pide solo los campos que faltan, que es lo que se
+le devuelve al modelo. El parser tolera preámbulos, cercado de markdown y cabeceras de otro nivel
+(`#### Handle:`).
+
 ### El modelo redacta, el código valida
 
 Esta es la parte que justifica que sea un plugin y no un prompt. El artículo enumera los errores
@@ -300,6 +332,44 @@ Lo que **no** hace: el punto 3 del artículo pide investigación de keywords con
 dice del producto —tipo, denominación, formato, elaboración—. Son ciertas, que es lo que hace falta
 para no inventar, pero no están priorizadas por demanda de búsqueda.
 
+### Cuánto tarda, y qué mirar si tarda demasiado
+
+El lote se redacta **en paralelo**, en trozos de `description.concurrency` (4 por defecto). El
+**primero va solo** a propósito: si el modelo está mal configurado se descubre con tres llamadas en
+vez de con un lote entero.
+
+Medido: 4 productos tardaban **204 segundos** en serie. Con la misma latencia por llamada, ahora son
+el primero más tres a la vez.
+
+Dos números del resumen dicen si hay algo que optimizar:
+
+| | Qué significa |
+|---|---|
+| `llamadas` | Lo que ha costado el lote de verdad. Con `intentosMedios` a 1, es una por ficha |
+| `intentosMedios` | Cerca de 1 es lo bueno. Cerca de 3 significa que el modelo pelea con las reglas, y **cada pelea es una llamada entera** |
+| `rechazos` | Qué regla ha rechazado borradores y cuántas veces. Es lo único que dice qué ajustar |
+
+Si `intentosMedios` sube, `rechazos` te dice dónde mirar antes de tocar nada:
+
+```
+Reglas que están costando llamadas:
+  entradaLarga: 7
+  bulletLargo: 2
+```
+
+Con eso, el ajuste es una decisión y no una corazonada: o se relaja el límite de palabras del
+párrafo en `catalog.config.yml`, o se acepta que ese modelo no sigue bien esa restricción. Y si es
+lo segundo, la etapa 3 puede usar **otro modelo que la sesión**:
+
+```yaml
+description:
+  provider: deepseek-official
+  model: deepseek-v4-pro     # charlar con uno rápido, redactar con uno preciso
+```
+
+Un modelo que acierta a la primera puede salir más barato que uno rápido que necesita tres intentos,
+aunque cueste más por llamada. Los números de arriba son los que lo deciden.
+
 ### Hay que acotar el lote
 
 Cada producto es una llamada al modelo y hay 793. Sin `limit`, `sku` ni `skus` la herramienta **no
@@ -313,6 +383,41 @@ catalog_describe(limit: 10, regenerate: "always")   # rescribe, perdiendo lo ant
 ```
 
 Respeta `description.regenerate`: con `missing` (el defecto) nunca rehace una ficha que ya existe.
+
+### Cuando el modelo no escribe nada
+
+Pasó de verdad: ocho borradores seguidos con **cero caracteres de texto**, y uno cortado en
+`Unterminated string at position 472`. La causa no era el modelo ni las reglas SEO, era el
+presupuesto de la llamada:
+
+```
+sesión:    deepseek-v4-flash · maxTokens 256000 · reasoningEffort "high"
+el plugin: maxTokens 1500 cableado, sin reasoningEffort
+```
+
+Con esfuerzo de razonamiento alto, el modelo se gasta el presupuesto de salida pensando y no le
+queda ninguno para escribir. Ahora se declara en la configuración:
+
+```yaml
+description:
+  reasoningEffort: low     # redactar no necesita razonar alto, y ahorra en 793 productos
+  maxTokens: 4000          # la ficha entera ronda los 500
+```
+
+Y el fallo se explica solo. Cada entrada de `fallos` dice cuántos caracteres de texto y de
+razonamiento llegaron, y enseña el principio de la respuesta cruda:
+
+```
+000048 (devolvió 0 caracteres de texto y 1847 de razonamiento):
+  - la respuesta no trae ningún bloque "### campo": está vacía
+  - el modelo gastó 1847 caracteres razonando y no escribió nada:
+    sube `description.maxTokens` o baja `description.reasoningEffort`
+```
+
+**Un fallo sistémico corta el lote.** Si el primer producto agota los intentos sin que el modelo
+escriba un solo bloque, el problema es de configuración y no de los datos: se para y se dice cuántos
+quedaron sin intentar. Ese escenario costaba 12 llamadas y ahora cuesta 3. Un fallo de *validación*,
+en cambio, sí es del producto concreto y no interrumpe el lote.
 
 ### Nada se publica sin revisar
 
@@ -400,7 +505,7 @@ lanzas es la raíz de workspace de la sesión.
 | Qué cambias | Qué hacer |
 |---|---|
 | `dsh-plugin/lib/*.js` | Reiniciar dsh + sesión nueva |
-| `catalog.config.yml`, bloque `description` | Nada: los límites del prompt y de la validación se releen en cada llamada |
+| `catalog.config.yml` (`description`, `source.dirs`) | Nada: se relee en cada llamada, incluidos los límites del prompt y el presupuesto del modelo |
 | `dsh-plugin/package.json` (dependencias) | `npm install` en `dsh-plugin/`, reiniciar + sesión nueva |
 | `agent.cordis.yml` o `preset.yml` | `cp` al preset desplegado + sesión nueva. **Sin reiniciar** |
 | `catalog.config.yml` | Nada: `catalog_load` lo relee en cada llamada |
@@ -476,8 +581,8 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 │   ├── package.json          # nombre, versión y dependencias del harness
 │   ├── lib/index.js          # las herramientas registradas en el registro `tools`
 │   ├── lib/catalog.js        # etapas 1 y 2: leer el fichero y normalizar cada fila
-│   ├── lib/seo.js            # etapa 3: el prompt y la validación del borrador
-│   └── test/                 # 52 tests con `node --test`, sin claves ni red
+│   ├── lib/seo.js            # etapa 3: el prompt, el parser de bloques y la validación
+│   └── test/                 # 72 tests con `node --test`, sin claves ni red
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
 ├── dsh.sh                    # despliega el plugin y arranca dsh, con sus comprobaciones
@@ -500,7 +605,7 @@ anonimizado. No hacen falta claves ni red:
 cd dsh-plugin && npm test          # node --test "test/*.test.js"
 ```
 
-Los 52 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
+Los 72 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
 envase, los precios con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las
 cuatro causas de rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un
 cliente nuevo trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**
@@ -509,6 +614,14 @@ De la etapa 3 se prueba el filtro, que es la parte que puede fallar en silencio:
 simula (`test/helpers.js`) y se comprueba que un borrador con keyword stuffing, con una añada
 inventada, con lenguaje promocional o calcado de otra ficha **rebota**, que las correcciones le
 vuelven al modelo, y que agotar los intentos no guarda basura.
+
+Cinco tests salen directamente de fallos reales de producción, y son los que evitan que vuelvan: que
+a `ctx.llm.stream()` le llegan el `reasoningEffort` y el `maxTokens` de la configuración; que una
+respuesta truncada conserva los campos completos y solo pide los que faltan; que un modelo que
+devuelve puro razonamiento corta el lote y nombra la causa; que el lote corre en paralelo con el
+primero solo; y que **dos fichas del mismo trozo no pueden salir con el mismo handle**, que es el
+riesgo que introduce el paralelismo — se redactan contra la misma foto de lo ya usado, así que la
+colisión hay que resolverla al aceptar.
 
 ## Las evals de sesiones
 
