@@ -20,7 +20,7 @@ de vinos, pero el plugin no depende de eso.
 |---|---|---|
 | 1 | **Ingesta** | Lee el fichero de catálogo (CSV export del ERP) y devuelve las filas crudas, con su cabecera tal cual viene. |
 | 2 | **Normalización** | Convierte cada fila al modelo interno de producto: SKU, título, categoría, precio, coste, stock, proveedor, atributos. Aquí se resuelven los formatos locales (coma decimal, `€`, fechas `d/m/aaaa`) y los códigos truncados del ERP. |
-| 3 | **Descripción con IA** | Redacta la descripción comercial a partir de los atributos normalizados, con el tono y el idioma que fije la configuración, y sin inventar lo que el fichero no dice. |
+| 3 | **Textos SEO con IA** | Redacta los seis campos que Shopify usa para posicionar la ficha —descripción, meta title, meta description, handle, alt text y descripción de feed— con el tono y el idioma que fije la configuración, y sin inventar lo que el fichero no dice. |
 | 4 | **Imagen** | Busca una foto existente del producto y, si no hay ninguna usable, genera una imagen nueva coherente con la ficha. |
 | 5 | **Publicación** | Crea o actualiza el producto en Shopify: título, descripción, imagen, tipo y tags, precio, coste y cantidad de inventario. |
 
@@ -30,17 +30,17 @@ concreto (regenerar la descripción, cambiar la imagen, sincronizar solo stock y
 
 ## Estado actual
 
-Las dos primeras etapas están implementadas y son la herramienta `catalog_load`. El código de la
+Las tres primeras etapas están implementadas. El código de la
 iteración anterior del proyecto —un agente que leía noticias RSS del sector y recomendaba un
 producto— **se ha eliminado**: no había nada reutilizable para leer un CSV.
 
 | Pieza | Estado |
 |---|---|
-| `catalog.config.yml` — configuración del dominio | ✅ la lee `catalog_load` |
+| `catalog.config.yml` — configuración del dominio | ✅ la leen las tres etapas |
 | `catalogo.example.csv` — fixture anonimizado | ✅ 22 filas, una por rareza del fichero real |
 | 1. Ingesta del fichero | ✅ `catalog_load` |
 | 2. Normalización a modelo de producto | ✅ `catalog_load` |
-| 3. Descripción con IA | ⛔ pendiente |
+| 3. Textos SEO con IA | ✅ `catalog_describe` + `catalog_review` |
 | 4. Búsqueda + generación de imagen | ⛔ pendiente |
 | 5. Publicación en Shopify (productos, precios, stock) | ⛔ pendiente |
 | Herramientas `wine_*` y agente Python `agent.py` | 🗑️ eliminadas |
@@ -89,7 +89,7 @@ repo. Un bloque por etapa del pipeline:
 
 | Bloque | Qué decide |
 |---|---|
-| `source` | Ruta del fichero, formato, codificación, separadores locales, y si la carga es incremental |
+| `source` | Ruta del fichero habitual, bandeja de entrada, formato, codificación, separadores locales, y si la carga es incremental |
 | `columns` | Columna del fichero → campo del modelo interno. Es el único sitio que conoce los nombres del ERP |
 | `normalize` | Capitalización del título, extracción del formato del envase, valores del flag `Bloqueado`, filas que se descartan |
 | `taxonomy` | `Cód. grupo producto` → `product_type`, tipos de elaboración → tags, código de proveedor → nombre, y qué hacer con la denominación de origen |
@@ -125,6 +125,50 @@ Decisiones que siguen abiertas, y que hay que cerrar antes de implementar la eta
 descripciones e imágenes ya generadas se respetan o se rescriben en cargas posteriores (hoy
 `regenerate: missing`), y qué se hace con los productos que están en Shopify y ya no vienen en el
 fichero (hoy `missingInFile: leave`).
+
+## Elegir el fichero de entrada
+
+⚠️ **dsh no admite adjuntar un CSV al chat.** Su capa de adjuntos
+(`@deepseek-ai/dsh-attachment`) solo acepta imágenes —PNG, JPEG, WebP y GIF—, y su propia
+documentación lista los ficheros genéricos como trabajo pendiente. Así que «subir el catálogo» se
+resuelve por disco.
+
+La forma de hacerlo es la **bandeja de entrada**: el directorio que declara `source.dir`
+(`./entradas` por defecto, en `.gitignore` porque va a tener catálogos de clientes). Se deja ahí el
+fichero y se elige por su nombre:
+
+```
+tú:  ¿qué catálogos tengo?
+     → catalog_sources
+       ✓ cliente-bodegas-sur.csv — 22 filas — modificado 2026-08-21
+       ✗ proveedor-ingles.csv — no trae las columnas que declara la configuración:
+           Nº, Descripción, Precio Venta tienda… Las que trae son: Item Code, Retail EUR…
+       ✗ precios-2026.xlsx — no es un .csv
+       El catálogo habitual de la tienda, si no se pide otro, es …/stock-rosas.csv
+
+tú:  carga el de bodegas sur
+     → catalog_load(path: "cliente-bodegas-sur")
+```
+
+`catalog_sources` no lista nombres: abre cada CSV, lo cuenta y **comprueba su cabecera contra el
+mapeo de columnas**. Un fichero de otro ERP se ve incompatible antes de cargarlo, y dice qué
+columnas le faltan — que es exactamente lo que hay que saber para escribir la configuración de un
+cliente nuevo.
+
+`catalog_load` resuelve el `path` de lo más explícito a lo más cómodo:
+
+| Lo que pasas | De dónde sale |
+|---|---|
+| nada | `source.path`, el catálogo habitual de la tienda |
+| `cliente-x.csv` o `cliente-x` | la bandeja de entrada (la extensión la pone `source.pattern`) |
+| `./otro/sitio/x.csv` | relativo al directorio donde arrancaste dsh |
+| `/ruta/absoluta.csv` | tal cual |
+
+**Las etapas siguientes trabajan sobre lo que se cargó, no sobre lo configurado.**
+`catalog_describe` lee el JSON que dejó `catalog_load`, así que si cargaste el fichero de un cliente
+es ese el que describe. Ambas herramientas dicen en su respuesta de qué fichero salió el catálogo:
+confundir el de un cliente con el de producción es un error caro, y verlo escrito es la única
+defensa.
 
 ## La herramienta `catalog_load`
 
@@ -204,6 +248,92 @@ Vino sin alcohol 8 · Otros 7 · Estuche 6 · Vino brisat 2 · Vino generoso 1
 avisos: sinFormato 27 · sinOrigen 18
 ```
 
+## Las herramientas `catalog_describe` y `catalog_review`
+
+La etapa 3. Escribe los **seis textos** que Shopify usa para posicionar una ficha, no solo la
+descripción:
+
+| Campo | Qué es en Shopify | Límite |
+|---|---|---|
+| `seoTitle` | El meta title de la página | 60 car. |
+| `seoDescription` | La meta description del resultado de búsqueda | 70-155 car. |
+| `bodyHtml` | La descripción de la ficha: un `<p>` de entrada y un `<ul>` de bullets | 700 car. |
+| `handle` | El trozo final de la URL | 70 car. |
+| `altText` | El texto alternativo de la foto | 125 car. |
+| `feedDescription` | La descripción para el feed de Google Merchant Center | 500 car. |
+
+Salen de [SEO Product Descriptions: 7 Tips to Optimize Product
+Pages](https://www.shopify.com/enterprise/blog/seo-product-descriptions), que en su punto 4 nombra
+exactamente esos como los campos de mayor impacto. `handle` y `altText` los necesitan igualmente
+las etapas 4 y 5, así que generarlos aquí evita una segunda pasada por el modelo. Los datos
+estructurados del punto 9 (name, description, price, currency, availability) no necesitan nada
+nuevo: salen de la etapa 2 y de estos campos.
+
+### Redacta con el modelo de tu sesión
+
+El plugin no trae cliente de IA ni pide una clave: inyecta el servicio `llm` de dsh y usa el
+proveedor y el modelo del agente (`exec.agent.options`). Cambias de modelo en dsh y cambia con
+quién se redacta, sin tocar nada.
+
+### El modelo redacta, el código valida
+
+Esta es la parte que justifica que sea un plugin y no un prompt. El artículo enumera los errores
+que un LLM comete solo, y cada uno tiene su comprobación determinista en `lib/seo.js`:
+
+| Regla | Qué se comprueba |
+|---|---|
+| Longitudes | Cada campo contra su límite, y `seoDescription` también su mínimo |
+| Escaneable en móvil (punto 6) | Un `<p>` de entrada de ≤40 palabras, luego 3-5 `<li>` de ≤90 car. |
+| «La primera frase dice qué es» (punto 4) | El párrafo de entrada tiene que nombrar el `productType` |
+| Keyword stuffing | Ninguna keyword más de 3 veces en el cuerpo |
+| Sin plantillas ni duplicados | `handle` único, y ningún texto idéntico al de otra ficha |
+| Sin relleno promocional (punto 8) | Lista de frases prohibidas: «envío gratis», «mejor precio»… |
+| Sin datos inventados | Patrones de añada, graduación y premios — **salvo si el dato está en el nombre del producto**, porque entonces no es invención |
+| Etiquetas HTML | Solo `p`, `ul`, `li`, `strong`, `em` |
+
+Cuando un borrador falla, los problemas vuelven al modelo redactados como correcciones y reintenta
+(`description.maxAttempts`, 3 por defecto). Si agota los intentos, el producto sale en `fallos` con
+el motivo y **no se guarda nada**: es mejor una ficha que falta que una mala.
+
+Lo que **no** hace: el punto 3 del artículo pide investigación de keywords con volumen y dificultad
+(Semrush o similar). No tenemos esa fuente, así que las keywords se derivan de lo que el fichero
+dice del producto —tipo, denominación, formato, elaboración—. Son ciertas, que es lo que hace falta
+para no inventar, pero no están priorizadas por demanda de búsqueda.
+
+### Hay que acotar el lote
+
+Cada producto es una llamada al modelo y hay 793. Sin `limit`, `sku` ni `skus` la herramienta **no
+procesa nada** y te dice cuántos faltan. `description.maxPerCall` (50) es el techo por llamada.
+
+```
+catalog_describe(dryRun: true, limit: 1)            # el prompt, sin gastar una llamada
+catalog_describe(limit: 10)                         # los 10 primeros pendientes
+catalog_describe(sku: "000048")                     # uno concreto
+catalog_describe(limit: 10, regenerate: "always")   # rescribe, perdiendo lo anterior
+```
+
+Respeta `description.regenerate`: con `missing` (el defecto) nunca rehace una ficha que ya existe.
+
+### Nada se publica sin revisar
+
+El punto 7 del artículo pide revisión humana, y Google trata el contenido generado a escala sin
+valor añadido como *scaled content abuse*. Así que las fichas nacen con `reviewed: false` y la
+etapa 5 solo publicará las aprobadas:
+
+```
+catalog_review(sku: "000048")     # una
+catalog_review(skus: [...])       # varias
+catalog_review(all: true)         # todas las pendientes
+```
+
+La persona del preset le dice al agente que no apruebe lo que ha escrito él, y que `all: true` es
+solo para cuando lo pide el usuario después de ver las fichas. Es una convención sostenida por el
+prompt, no por el código: el código no puede distinguir quién aprueba.
+
+Los textos van a `output.seoJson` (`.artifacts/catalog-seo.json`), indexados por SKU y **aparte del
+catálogo**: la normalización es determinista y se rehace entera en cada carga, así que mezclarlos
+perdería lo generado en cada recarga. Se juntan por SKU al publicar.
+
 ## Instalar el plugin (una sola vez)
 
 ```bash
@@ -223,31 +353,54 @@ El preset se elige por sesión en dsh, o se fija en `agent-presets.default` de
 
 ## Desplegar cambios y arrancar
 
-El ciclo completo después de tocar el repo, desde la raíz:
-
 ```bash
-# 1. sube la versión en los TRES sitios (ver abajo) y pasa los tests
-cd dsh-plugin && npm test && cd ..
-
-# 2. despliega el preset — el plugin no hay que redesplegarlo, es un symlink
-cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
-
-# 3. reinicia dsh: Ctrl-C donde esté corriendo, y otra vez
-npx @deepseek-ai/dsh@0.1.0-rc.6 web                  # http://localhost:3080
-
-# 4. abre una SESIÓN NUEVA en el navegador
+./dsh.sh
 ```
 
-El paso 4 no es opcional: una sesión ya abierta sigue con el código y el preset que tenía cuando se
-creó. Y fija la versión de dsh en el comando: `npx dsh` es otro paquete de npm y falla con `could
-not determine executable to run`, y sin versión npx se baja la rc más nueva. Para otro puerto,
-`--port 8080`. El directorio desde el que lanzas es la raíz de workspace de la sesión.
+Eso es todo. El script hace el ciclo entero y se para en el primer fallo:
+
+| | Paso | Por qué |
+|---|---|---|
+| 1 | Comprueba que la versión coincide en los tres sitios | dsh lee el preset desplegado, no el repo: si no cuadran, enseña la vieja |
+| 2 | `npm install` en `dsh-plugin/` | Idempotente; ~1 s cuando ya está al día |
+| 3 | `npm test` | No despliega código que no pasa los tests |
+| 4 | Comprueba que el perfil de dsh apunta a ESTE repo | Es un symlink: si ya apunta bien, no reinstala nada |
+| 5 | Copia el preset a `~/.dsh/.agent-presets/` | Es lo único que hay que redesplegar de verdad |
+| 6 | Arranca el plugin fuera de dsh y prueba las herramientas en seco | Carga `index.js` **desde la ruta del perfil** y llama a `catalog_load` y a `catalog_describe` con `dryRun`. Un import roto o un esquema inválido se ven aquí, no en el navegador |
+| 7 | Para lo que hubiera escuchando en el puerto | Reiniciar sin buscar el proceso a mano. Con `-n` **no** lo para: te deja el que tenías |
+| 8 | Arranca dsh en primer plano | Se para con `Ctrl-C` |
+
+```bash
+./dsh.sh                    # despliega y arranca
+./dsh.sh -n                 # solo despliega y comprueba, no arranca
+./dsh.sh --port 8080        # otro puerto
+SKIP_TESTS=1 ./dsh.sh       # para iterar rápido
+SKIP_VERSION_CHECK=1 ./dsh.sh
+```
+
+Cuando arranque, **abre sesión nueva** en el navegador: eso no lo puede hacer el script, y una
+sesión ya abierta se queda con el código y el preset que tenía cuando se creó.
+
+### Los mismos pasos a mano
+
+Si prefieres verlos, o si el script falla y quieres ir por partes:
+
+```bash
+cd dsh-plugin && npm test && cd ..
+cp agent-presets/catalog-agent/*.yml ~/.dsh/.agent-presets/catalog-agent/
+npx @deepseek-ai/dsh@0.1.0-rc.6 web                  # http://localhost:3080
+```
+
+Fija la versión de dsh en el comando: `npx dsh` es otro paquete de npm y falla con `could not
+determine executable to run`, y sin versión npx se baja la rc más nueva. El directorio desde el que
+lanzas es la raíz de workspace de la sesión.
 
 ### No siempre hace falta todo
 
 | Qué cambias | Qué hacer |
 |---|---|
 | `dsh-plugin/lib/*.js` | Reiniciar dsh + sesión nueva |
+| `catalog.config.yml`, bloque `description` | Nada: los límites del prompt y de la validación se releen en cada llamada |
 | `dsh-plugin/package.json` (dependencias) | `npm install` en `dsh-plugin/`, reiniciar + sesión nueva |
 | `agent.cordis.yml` o `preset.yml` | `cp` al preset desplegado + sesión nueva. **Sin reiniciar** |
 | `catalog.config.yml` | Nada: `catalog_load` lo relee en cada llamada |
@@ -318,21 +471,25 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 .
 ├── catalog.config.yml        # configuración del dominio: fichero, columnas, taxonomía, IA, Shopify
 ├── catalogo.example.csv      # fixture anonimizado (el CSV real es de producción y no se versiona)
+├── entradas/                 # bandeja de entrada: los catálogos que se quieran cargar (en .gitignore)
 ├── dsh-plugin/               # el plugin nativo de dsh
 │   ├── package.json          # nombre, versión y dependencias del harness
 │   ├── lib/index.js          # las herramientas registradas en el registro `tools`
 │   ├── lib/catalog.js        # etapas 1 y 2: leer el fichero y normalizar cada fila
-│   └── test/                 # tests de la normalización, con `node --test`
+│   ├── lib/seo.js            # etapa 3: el prompt y la validación del borrador
+│   └── test/                 # 52 tests con `node --test`, sin claves ni red
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
+├── dsh.sh                    # despliega el plugin y arranca dsh, con sus comprobaciones
 ├── harness/env.py            # carga del .env para lo que queda en Python
 ├── eval/eval_session.py      # evaluación de sesiones reales de dsh (de la iteración anterior)
 └── .artifacts/               # salida del pipeline (en .gitignore: contiene datos reales)
 ```
 
-El reparto de `dsh-plugin/lib/` es a propósito: `catalog.js` es un módulo puro y determinista —no
-llama a ningún modelo, no toca la red y no escribe nada— y por eso se puede testear con un fixture
-sin levantar dsh. `index.js` es lo único que conoce el harness.
+El reparto de `dsh-plugin/lib/` es a propósito: `catalog.js` y `seo.js` son módulos puros —no
+llaman a ningún modelo, no tocan la red y no escriben nada— y por eso se pueden testear con un
+fixture sin levantar dsh. `seo.js` construye el prompt y valida el borrador; quien habla con el
+modelo es `index.js`, que es también lo único que conoce el harness.
 
 ## Tests
 
@@ -343,10 +500,15 @@ anonimizado. No hacen falta claves ni red:
 cd dsh-plugin && npm test          # node --test "test/*.test.js"
 ```
 
-Los 23 tests van uno por regla: las cinco maneras de escribir el formato del envase, los precios
-con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las cuatro causas de
-rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un cliente nuevo
-trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**
+Los 52 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
+envase, los precios con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las
+cuatro causas de rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un
+cliente nuevo trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**
+
+De la etapa 3 se prueba el filtro, que es la parte que puede fallar en silencio: el modelo se
+simula (`test/helpers.js`) y se comprueba que un borrador con keyword stuffing, con una añada
+inventada, con lenguaje promocional o calcado de otra ficha **rebota**, que las correcciones le
+vuelven al modelo, y que agotar los intentos no guarda basura.
 
 ## Las evals de sesiones
 

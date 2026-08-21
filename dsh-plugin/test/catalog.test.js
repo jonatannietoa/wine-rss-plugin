@@ -1,27 +1,9 @@
-/**
- * Tests de las etapas 1 y 2 sobre `catalogo.example.csv`, el fixture anonimizado.
- *
- * El fixture reproduce a propósito cada rareza del export real: el formato del
- * envase escrito de cinco maneras, precios con `€` y coma decimal, un precio
- * `#N/A`, un grupo que la taxonomía no declara, una fila sin SKU, un stock que no
- * es un número, un coste ilegible, una fecha que no existe y un flag de bloqueo
- * desconocido. Si un cliente nuevo trae una rareza más, se añade aquí una fila.
- *
- * @module dsh-plugin-catalog-agent/test/catalog
- */
-
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
-import { dump } from 'js-yaml'
-import { buildCatalog, loadConfig } from '../lib/catalog.js'
-import { Config, apply } from '../lib/index.js'
-
-const RAIZ = resolve(import.meta.dirname, '..', '..')
-const CONFIG = join(RAIZ, 'catalog.config.yml')
-const FIXTURE = join(RAIZ, 'catalogo.example.csv')
+import { buildCatalog, listSources, loadConfig, resolveSourcePath } from '../lib/catalog.js'
+import { CONFIG, FIXTURE, configTemporal, registrar, temporal } from './helpers.js'
 
 const config = loadConfig(CONFIG)
 const { catalog, summary } = buildCatalog(config, { path: FIXTURE })
@@ -39,33 +21,6 @@ const avisos = (sku) => producto(sku).warnings.map((aviso) => aviso.code)
 
 /** La fila rechazada con ese SKU. */
 const rechazo = (sku) => catalog.rejected.find((fila) => fila.sku === sku)
-
-/** Un directorio temporal recién creado. */
-const temporal = () => mkdtempSync(join(tmpdir(), 'catalog-agent-'))
-
-/**
- * Escribe una copia de la configuración de la tienda en un temporal, apuntando al
- * fixture y escribiendo su salida fuera del repo.
- * @param mutar - retoque de la configuración antes de volcarla.
- * @returns la ruta del `catalog.config.yml` temporal.
- */
-function configTemporal(mutar = () => {}) {
-  const crudo = JSON.parse(JSON.stringify(loadConfig(CONFIG)))
-  delete crudo.baseDir
-  crudo.source.path = FIXTURE
-  crudo.output = { catalogJson: './catalog.json' }
-  mutar(crudo)
-  const ruta = join(temporal(), 'catalog.config.yml')
-  writeFileSync(ruta, dump(crudo), 'utf8')
-  return ruta
-}
-
-/** Registra las herramientas del plugin con un contexto de mentira. */
-function registrar(configPath) {
-  const registradas = []
-  apply({ tools: { register: (tool) => registradas.push(tool) } }, Config({ configPath }))
-  return registradas
-}
 
 test('la configuración de la tienda es válida', () => {
   assert.equal(config.source.format, 'csv')
@@ -211,15 +166,78 @@ test('modifiedSince deja fuera lo que el ERP no ha tocado', () => {
   }
 })
 
-test('el plugin registra catalog_load con un esquema de salida válido', () => {
+test('la bandeja de entrada dice qué hay y si sirve', () => {
+  const bandeja = temporal()
+  // Uno bueno: el fixture entero.
+  const bueno = join(bandeja, 'cliente-bueno.csv')
+  writeFileSync(bueno, readFileSync(FIXTURE, 'utf8'), 'utf8')
+  // Uno con la cabecera de otro ERP.
+  writeFileSync(join(bandeja, 'cliente-ajeno.csv'), 'Item Code,Retail EUR,Qty\nA1,10.00,3\n', 'utf8')
+  // Uno que no es un CSV.
+  writeFileSync(join(bandeja, 'precios.xlsx'), 'no soy un csv', 'utf8')
+  // Los ocultos no cuentan.
+  writeFileSync(join(bandeja, '.DS_Store'), '', 'utf8')
+
+  const config = loadConfig(configTemporal((c) => { c.source.dir = bandeja }))
+  const { existe, files } = listSources(config)
+  assert.ok(existe)
+  assert.deepEqual(files.map((f) => f.name), ['cliente-ajeno.csv', 'cliente-bueno.csv', 'precios.xlsx'])
+
+  const porNombre = new Map(files.map((f) => [f.name, f]))
+  assert.equal(porNombre.get('cliente-bueno.csv').compatible, true)
+  assert.equal(porNombre.get('cliente-bueno.csv').rows, 22)
+  assert.equal(porNombre.get('cliente-ajeno.csv').compatible, false)
+  assert.match(porNombre.get('cliente-ajeno.csv').problema, /no trae las columnas/)
+  assert.match(porNombre.get('precios.xlsx').problema, /no es un \.csv/)
+})
+
+test('una bandeja que no existe no es un error, solo está vacía', () => {
+  const config = loadConfig(configTemporal((c) => { c.source.dir = '/no/existe/esta/ruta' }))
+  const { existe, files } = listSources(config)
+  assert.equal(existe, false)
+  assert.deepEqual(files, [])
+})
+
+test('basta el nombre del fichero si está en la bandeja, con extensión o sin ella', () => {
+  const bandeja = temporal()
+  writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
+  const config = loadConfig(configTemporal((c) => { c.source.dir = bandeja }))
+
+  assert.equal(resolveSourcePath(config, 'cliente-x.csv'), join(bandeja, 'cliente-x.csv'))
+  assert.equal(resolveSourcePath(config, 'cliente-x'), join(bandeja, 'cliente-x.csv'))
+  // Sin pedir nada, el catálogo habitual de la tienda.
+  assert.equal(resolveSourcePath(config), FIXTURE)
+  // Una ruta absoluta se respeta tal cual.
+  assert.equal(resolveSourcePath(config, FIXTURE), FIXTURE)
+})
+
+test('catalog_load carga por nombre y dice de qué fichero salió', async () => {
+  const bandeja = temporal()
+  writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
+  const { catalog_load: tool } = registrar(configTemporal((c) => { c.source.dir = bandeja }))
+
+  const resultado = await tool.execute({ path: 'cliente-x' })
+  assert.equal(resultado.sourcePath, join(bandeja, 'cliente-x.csv'))
+  assert.equal(resultado.ok, 18)
+})
+
+test('catalog_sources incluye el catálogo habitual, no solo la bandeja', async () => {
+  const { catalog_sources: tool } = registrar(configTemporal((c) => { c.source.dir = temporal() }))
+  const resultado = await tool.execute({})
+  assert.equal(resultado.habitual, FIXTURE)
+  assert.deepEqual(resultado.files, [])
+})
+
+test('el plugin registra las herramientas del pipeline', () => {
   const registradas = registrar(configTemporal())
-  assert.equal(registradas.length, 1)
-  assert.equal(registradas[0].name, 'catalog_load')
+  assert.deepEqual(
+    Object.keys(registradas).sort(),
+    ['catalog_describe', 'catalog_load', 'catalog_review', 'catalog_sources'],
+  )
 })
 
 test('el tool escribe el catálogo completo y devuelve solo el resumen', async () => {
-  const configPath = configTemporal()
-  const [tool] = registrar(configPath)
+  const { catalog_load: tool } = registrar(configTemporal())
   const resultado = await tool.execute({})
 
   assert.equal(resultado.ok, 18)
@@ -238,14 +256,14 @@ test('el tool escribe el catálogo completo y devuelve solo el resumen', async (
 })
 
 test('el tool devuelve un producto concreto por sku', async () => {
-  const [tool] = registrar(configTemporal())
+  const { catalog_load: tool } = registrar(configTemporal())
   const resultado = await tool.execute({ sku: '000109' })
   assert.equal(resultado.producto.title, 'Ejemplo Magnum')
   assert.equal(resultado.producto.volumeMl, 1500)
 })
 
 test('el tool explica por qué un sku rechazado no está en el catálogo', async () => {
-  const [tool] = registrar(configTemporal())
+  const { catalog_load: tool } = registrar(configTemporal())
   await assert.rejects(
     () => tool.execute({ sku: '000113' }),
     /se ha rechazado \(línea 14\).*#N\/A/s,
@@ -254,6 +272,6 @@ test('el tool explica por qué un sku rechazado no está en el catálogo', async
 })
 
 test('el tool rechaza una fecha mal escrita en modifiedSince', async () => {
-  const [tool] = registrar(configTemporal())
+  const { catalog_load: tool } = registrar(configTemporal())
   await assert.rejects(() => tool.execute({ modifiedSince: '10/2/2026' }), /aaaa-mm-dd/)
 })

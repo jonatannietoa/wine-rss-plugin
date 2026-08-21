@@ -1,6 +1,7 @@
 name: Agente de catálogo (0.2.0)
 description: >-
   Agente de catálogo: carga los productos desde el fichero que exporta el ERP de la
-  tienda y los convierte en fichas normalizadas (nombre, formato, tipo, tags, precio,
-  coste y stock), diciendo qué filas ha rechazado y por qué. Las etapas de descripción
-  con IA, imagen y publicación en Shopify todavía no están implementadas.
+  tienda, los convierte en fichas normalizadas (nombre, formato, tipo, tags, precio,
+  coste y stock) y les escribe los textos SEO de Shopify —descripción, metadatos,
+  handle, alt text y feed de Merchant Center— con revisión humana antes de publicar.
+  Las etapas de imagen y de publicación en Shopify todavía no están implementadas.

@@ -21,6 +21,14 @@ source:
   # de la sesión. El fichero real es de producción y está en `.gitignore`; para
   # desarrollar, apunta a `catalogo.example.csv`, que es el fixture anonimizado.
   path: /Users/jonatannietoa/Documents/projects/dsh-plugin-catalog-agent/stock-rosas.csv
+  # Bandeja de entrada: donde se dejan los ficheros que se quieran cargar sin ser
+  # el habitual. `catalog_sources` lista lo que haya aquí, y `catalog_load` acepta
+  # un nombre suelto ("cliente-x.csv", o incluso "cliente-x") y lo busca en este
+  # directorio. dsh no admite adjuntar un CSV al chat —su capa de adjuntos es solo
+  # de imágenes—, así que dejar el fichero aquí es lo más parecido a subirlo.
+  # Contiene catálogos de clientes: está en `.gitignore`.
+  dir: ./entradas
+  pattern: '*.csv'
   format: csv
   encoding: utf-8
   delimiter: ','
@@ -125,22 +133,103 @@ output:
   # de trabajo de la sesión. Contiene costes y códigos de proveedor reales:
   # `.artifacts/` está en `.gitignore`.
   catalogJson: ./.artifacts/catalog.json
+  # JSON con los textos SEO que escribe `catalog_describe`, indexado por SKU. Va
+  # aparte del catálogo a propósito: la normalización es determinista y se
+  # rehace entera cada vez, así que mezclar aquí lo generado lo perdería en cada
+  # recarga. Se juntan por SKU cuando toque publicar.
+  seoJson: ./.artifacts/catalog-seo.json
 
 # ── 3. Descripción con IA ────────────────────────────────────────────────────
+# Sigue las nueve reglas de "SEO Product Descriptions: 7 Tips to Optimize Product
+# Pages" (shopify.com/enterprise/blog/seo-product-descriptions). El reparto es:
+# el modelo redacta, y `lib/seo.js` valida y rechaza contra lo que se declara
+# aquí. Si un borrador incumple, se le devuelven los problemas y reintenta.
 description:
   language: es
   # Tono comercial de la tienda. Es la instrucción que recibe el modelo.
   tone: >-
     Cercano y sobrio, de tienda especializada. Sin superlativos ni lenguaje de
     catálogo publicitario.
-  maxChars: 700
+  # A quién le habla la ficha. El punto 1 del artículo ("escribe para el
+  # comprador, no para el buscador") no se puede cumplir sin esto.
+  audience: >-
+    Alguien que compra vino para beber en casa y agradece que le digan qué es y
+    para qué momento sirve, sin lenguaje de sumiller.
+
+  # Longitudes por campo. Los metadatos las tienen porque el buscador los
+  # recorta; el cuerpo la tiene por la tienda, no por SEO: el punto 5 del
+  # artículo dice expresamente que no hay una longitud correcta fija.
+  seoTitle:
+    maxChars: 60
+  seoDescription:
+    minChars: 70
+    maxChars: 155
+  bodyHtml:
+    maxChars: 700
+    # Punto 6, "escaneable en móvil": un párrafo de entrada corto y luego
+    # bullets, en vez de un bloque de texto.
+    leadMaxWords: 40
+    bullets:
+      min: 3
+      max: 5
+      maxChars: 90
+    # Etiquetas permitidas en el cuerpo. Lo que no esté aquí se rechaza.
+    allowTags: [p, ul, li, strong, em]
+  altText:
+    # Punto 4: describe lo que se ve en la imagen, en lenguaje llano. No es un
+    # sitio donde meter keywords.
+    maxChars: 125
+  feedDescription:
+    # Punto 8: el feed de Merchant Center es un campo distinto del de la ficha.
+    maxChars: 500
+  handle:
+    maxChars: 70
+
   # Atributos que el modelo puede usar. Solo lo que viene del fichero: nada más.
+  # `volumeMl` no está a propósito: `format` ya dice la medida, y darle las dos
+  # invita a escribir «75 cl» y «750 ml» en la misma ficha.
   fields: [title, productType, origin, productionType, countryCode, format]
+  # De dónde salen las keywords. El punto 3 pide investigación con volumen y
+  # dificultad (Semrush o similar) y no tenemos esa fuente: se derivan de lo que
+  # el fichero dice del producto, que al menos es cierto. Si algún día hay
+  # research de verdad, entra por aquí.
+  keywordsFrom: [productType, origin, format, productionType]
+
   # Reglas duras: el modelo no puede inventar lo que el fichero no dice.
   forbid:
     - notas de cata, aromas o maridajes que no estén en los datos
     - añadas, graduación o variedades de uva no presentes en el fichero
     - premios, puntuaciones y comparaciones con otras bodegas
+  # Lo anterior es una instrucción; esto es lo que el código comprueba de verdad.
+  # Cada patrón que encaje tumba el borrador. Se compilan sin distinguir
+  # mayúsculas (JavaScript no admite el flag inline `(?i)` en el patrón).
+  forbidPatterns:
+    # Una añada que el fichero no trae.
+    - '\b(?:19|20)\d{2}\b'
+    # Graduación inventada.
+    - '\d+([.,]\d+)?\s*(?:%|grados?|º)'
+    # Premios y puntuaciones (punto "boilerplate y afirmaciones sin respaldo").
+    - '\b(premio|medalla|galard[oó]n|parker|peñ[ií]n|\d+\s*puntos)\b'
+  # Punto 8: los feeds de Merchant Center quieren datos de producto, no promoción.
+  forbidPhrases:
+    - envío gratis
+    - mejor precio
+    - oferta limitada
+    - última unidades
+    - no te lo pierdas
+    - imperdible
+    - precio inmejorable
+    - la mejor relación calidad-precio
+  # Contra el keyword stuffing: ninguna keyword puede aparecer más veces que esto
+  # en el cuerpo de la ficha.
+  maxKeywordRepeats: 3
+
+  # Intentos por producto antes de darlo por fallido. El primero es el borrador;
+  # los siguientes reciben la lista de problemas que hay que corregir.
+  maxAttempts: 3
+  # Techo de productos por llamada, para que un `limit` grande no se convierta en
+  # una factura sorpresa.
+  maxPerCall: 50
   # `missing` = solo los productos que aún no tienen descripción; `always`
   # rescribe todo en cada carga; `never` no toca ninguna.
   regenerate: missing

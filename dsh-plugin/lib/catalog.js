@@ -12,8 +12,8 @@
  * @module dsh-plugin-catalog-agent/catalog
  */
 
-import { readFileSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { parse } from 'csv-parse/sync'
 import { load as loadYaml } from 'js-yaml'
 
@@ -77,6 +77,101 @@ export function resolveFromConfig(config, path) {
 }
 
 /**
+ * Resuelve qué fichero hay que leer a partir de lo que diga quien llama.
+ *
+ * dsh no admite adjuntar un CSV al chat, así que señalar la entrada es señalar un
+ * fichero del disco. El orden va de lo más explícito a lo más cómodo:
+ * una ruta absoluta se usa tal cual; una relativa con separadores cuelga del
+ * directorio de trabajo de la sesión; y un nombre suelto se busca primero en la
+ * bandeja de entrada (`source.dir`), donde con `pattern` basta el nombre sin
+ * extensión.
+ * @param config - la configuración cargada.
+ * @param entrada - lo que pidió quien llama, o nada para el fichero habitual.
+ * @returns la ruta absoluta del fichero a leer.
+ */
+export function resolveSourcePath(config, entrada) {
+  const pedido = entrada === undefined || entrada === null ? '' : String(entrada).trim()
+  if (!pedido) return resolveFromConfig(config, config.source.path)
+  if (isAbsolute(pedido)) return pedido
+  if (pedido.includes(sep) || pedido.includes('/')) return resolve(pedido)
+
+  const bandeja = config.source.dir ? resolveFromConfig(config, config.source.dir) : null
+  if (bandeja) {
+    const extension = extname(config.source.pattern ?? '') || '.csv'
+    for (const candidato of [pedido, `${pedido}${extension}`]) {
+      const ruta = join(bandeja, candidato)
+      if (existsSync(ruta)) return ruta
+    }
+  }
+  return resolve(pedido)
+}
+
+/**
+ * Las columnas obligatorias que una cabecera no trae.
+ * @param cabecera - los nombres de columna del fichero.
+ * @param config - la configuración cargada.
+ * @returns los nombres declarados que faltan.
+ */
+function columnasQueFaltan(cabecera, config) {
+  return REQUIRED_COLUMNS
+    .map((clave) => config.columns[clave])
+    .filter((columna) => !cabecera.includes(columna))
+}
+
+/**
+ * Lista los ficheros de la bandeja de entrada, diciendo de cada uno si sirve.
+ *
+ * Es lo que convierte «cuál es la entrada» en una conversación: en vez de teclear
+ * una ruta a ciegas, se ve qué hay, cuántas filas tiene y si su cabecera encaja
+ * con el mapeo de columnas.
+ * @param config - la configuración cargada.
+ * @returns `{ dir, existe, files }`; cada fichero con sus filas y su compatibilidad.
+ */
+export function listSources(config) {
+  const dir = config.source.dir ? resolveFromConfig(config, config.source.dir) : null
+  if (!dir || !existsSync(dir)) return { dir, existe: false, files: [] }
+
+  const extension = extname(config.source.pattern ?? '') || '.csv'
+  const files = []
+  for (const nombre of readdirSync(dir).sort()) {
+    if (nombre.startsWith('.')) continue
+    const ruta = join(dir, nombre)
+    let info
+    try {
+      info = statSync(ruta)
+    } catch {
+      continue
+    }
+    if (!info.isFile()) continue
+
+    const fichero = {
+      name: nombre,
+      path: ruta,
+      bytes: info.size,
+      modifiedAt: info.mtime.toISOString().slice(0, 10),
+      rows: null,
+      compatible: false,
+      problema: null,
+    }
+    if (extname(nombre).toLowerCase() !== extension.toLowerCase()) {
+      fichero.problema = `no es un ${extension} (la configuración solo lee ${config.source.format})`
+    } else {
+      try {
+        const { rows } = readRows(config, ruta)
+        const faltan = columnasQueFaltan(Object.keys(rows[0]), config)
+        fichero.rows = rows.length
+        fichero.compatible = faltan.length === 0
+        if (faltan.length > 0) fichero.problema = `le faltan columnas: ${faltan.join(', ')}`
+      } catch (error) {
+        fichero.problema = error.message
+      }
+    }
+    files.push(fichero)
+  }
+  return { dir, existe: true, files }
+}
+
+/**
  * Lee el CSV y comprueba que trae las columnas declaradas.
  * @param config - la configuración cargada.
  * @param pathOverride - ruta alternativa, para probar contra el fixture.
@@ -84,7 +179,7 @@ export function resolveFromConfig(config, path) {
  *   fichero no trae.
  */
 export function readRows(config, pathOverride) {
-  const path = resolveFromConfig(config, pathOverride ?? config.source.path)
+  const path = resolveSourcePath(config, pathOverride)
   let texto
   try {
     texto = readFileSync(path, { encoding: config.source.encoding ?? 'utf8' })
@@ -109,9 +204,7 @@ export function readRows(config, pathOverride) {
   if (rows.length === 0) throw new Error(`el catálogo en ${path} no trae ninguna fila`)
 
   const cabecera = Object.keys(rows[0])
-  const faltan = REQUIRED_COLUMNS
-    .map((clave) => config.columns[clave])
-    .filter((columna) => !cabecera.includes(columna))
+  const faltan = columnasQueFaltan(cabecera, config)
   if (faltan.length > 0) {
     throw new Error(
       `el fichero ${path} no trae las columnas que declara la configuración: ${faltan.join(', ')}. `
