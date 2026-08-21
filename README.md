@@ -316,7 +316,7 @@ que un LLM comete solo, y cada uno tiene su comprobación determinista en `lib/s
 |---|---|
 | Longitudes | Cada campo contra su límite, y `seoDescription` también su mínimo |
 | Escaneable en móvil (punto 6) | Un `<p>` de entrada de ≤40 palabras, luego 3-5 `<li>` de ≤90 car. |
-| «La primera frase dice qué es» (punto 4) | El párrafo de entrada tiene que nombrar el `productType` |
+| «La primera frase dice qué es» (punto 4) | El párrafo nombra el `productType` **o la categoría** — hay grupos del ERP que se traducen a cubos genéricos (`Otros`), y exigir esa palabra fuerza una frase que nadie escribiría |
 | Keyword stuffing | Ninguna keyword más de 3 veces en el cuerpo |
 | Sin plantillas ni duplicados | `handle` único, y ningún texto idéntico al de otra ficha |
 | Sin relleno promocional (punto 8) | Lista de frases prohibidas: «envío gratis», «mejor precio»… |
@@ -334,20 +334,38 @@ para no inventar, pero no están priorizadas por demanda de búsqueda.
 
 ### Cuánto tarda, y qué mirar si tarda demasiado
 
-El lote se redacta **en paralelo**, en trozos de `description.concurrency` (4 por defecto). El
-**primero va solo** a propósito: si el modelo está mal configurado se descubre con tres llamadas en
-vez de con un lote entero.
+El lote se redacta **en paralelo**, en trozos de `description.concurrency` (4 por defecto).
 
-Medido: 4 productos tardaban **204 segundos** en serie. Con la misma latencia por llamada, ahora son
-el primero más tres a la vez.
+Medido sobre el mismo lote de 4 productos: **204 s** en serie → **97 s** con paralelismo → **~32 s**
+saltando la sonda. El suelo son 32 s, y es la latencia de una llamada.
 
-Dos números del resumen dicen si hay algo que optimizar:
+Cuatro números del resumen dicen si queda algo que rascar:
 
 | | Qué significa |
 |---|---|
-| `llamadas` | Lo que ha costado el lote de verdad. Con `intentosMedios` a 1, es una por ficha |
-| `intentosMedios` | Cerca de 1 es lo bueno. Cerca de 3 significa que el modelo pelea con las reglas, y **cada pelea es una llamada entera** |
+| `segundos` | Lo que ha tardado de pared |
+| `segundosPorLlamada` | **El suelo.** Es latencia del proveedor: no baja paralelizando, solo con otro modelo |
+| `intentosMedios` | Cerca de 1 es lo bueno. Cada intento de más alarga la ronda entera, porque los reintentos de un producto son secuenciales |
+| `razonamientoMaximo` | Caracteres que gastó razonando la llamada que más razonó. Si se acerca a `maxTokens` × 3, el presupuesto va al filo y volverán las respuestas vacías |
 | `rechazos` | Qué regla ha rechazado borradores y cuántas veces. Es lo único que dice qué ajustar |
+
+El tiempo de pared es, aproximadamente, `segundosPorLlamada` × (rondas secuenciales), y las rondas
+son: la sonda si la hay, más el peor número de intentos de cada trozo paralelo. De ahí salen las tres
+palancas: quitar la sonda, bajar los intentos, y subir `concurrency` cuando el lote es grande.
+
+### La sonda del primer producto
+
+El primer producto del lote se redacta **solo** para que un modelo mal configurado cueste tres
+llamadas en vez de un lote entero. Es una guarda que se ganó el sitio: evitó 24 llamadas en balde una
+vez. Pero es una ronda secuencial completa, **un 33 % del tiempo de pared en un lote de cuatro**.
+
+Por eso `description.probeFirst: auto` la salta cuando ya hay una ficha escrita por *ese mismo
+modelo*: eso es prueba de que la configuración funciona, y entonces la sonda no protege de nada. La
+primera carga con un modelo nuevo la paga; las siguientes no. Medido con la misma latencia y las
+mismas 4 llamadas: **6,4 s → 3,2 s**.
+
+`always` la hace siempre (lo más prudente y lo más lento) y `never` nunca. Sin sonda la guarda no
+desaparece: pasa al primer trozo, que se corta igual si nadie de ahí produce un bloque.
 
 Si `intentosMedios` sube, `rechazos` te dice dónde mirar antes de tocar nada:
 
@@ -419,6 +437,75 @@ escriba un solo bloque, el problema es de configuración y no de los datos: se p
 quedaron sin intentar. Ese escenario costaba 12 llamadas y ahora cuesta 3. Un fallo de *validación*,
 en cambio, sí es del producto concreto y no interrumpe el lote.
 
+### El razonamiento cuenta contra el mismo presupuesto
+
+La trampa que costó 7 fichas: `reasoningEffort: low` **no apaga el razonamiento**, solo le baja el
+empeño — en el cable es `thinking: enabled` con `reasoning_effort: low`, y son unos **3.000 tokens
+medidos**. Y esos tokens salen del mismo `maxTokens` que el texto. Con el tope en 4.000 quedaban
+~1.000 para una ficha que necesita ~500: entraba o no entraba según lo que se estirara el
+razonamiento, y de ahí unos fallos intermitentes con la firma inconfundible de *0 caracteres de
+texto y 11.400 de razonamiento* (11.400 es el tope, no una casualidad).
+
+Por eso `maxTokens: 16000`. No es generosidad: es que el tope no puede estar calculado solo para el
+texto.
+
+### No uses `low`
+
+Los esfuerzos que acepta el adaptador dependen de su versión, y **esa versión no se puede fijar**:
+
+| Versión del adaptador | Acepta |
+|---|---|
+| siempre | `off`, `high`, `max` |
+| desde rc.8 | `+ low` |
+
+`dsh` declara todas sus dependencias con rangos (`^0.1.0-rc.6`), así que npm resuelve
+`dsh-llm-deepseek` a lo más nuevo que encaje **el día que se instala**. En dos cachés de npx de la
+misma máquina salieron rc.6 y rc.8. Con `low` en la configuración, la carga funciona o revienta con
+`UNSUPPORTED_REASONING_EFFORT` según lo que tocara. Por eso el defecto es `high`.
+
+Tampoco se arregla pinando el plugin a rc.6: `dsh-tools@rc.6` pide `dsh-session@^0.1.0-rc.6`, npm lo
+sube a rc.8 y ese exige `dsh-llm@^0.1.0-rc.8`. No hay árbol coherente en rc.6, así que el plugin
+declara rc.8 aunque el host sea rc.6 — es lo que npm produce, no una elección.
+
+Dos redes para que esto no vuelva a costar una sesión: `./dsh.sh` comprueba qué esfuerzos acepta el
+adaptador resuelto y **para el despliegue** si la configuración pide otro; y si aun así el proveedor
+lo rechaza en caliente, el error dice de dónde sale el valor y cuáles valen.
+
+### Medir un esfuerzo contra otro
+
+`off` apaga el razonamiento del todo. Para la prosa no hace falta, pero buena parte de los rechazos
+son de **contar** caracteres, palabras y repeticiones, y ahí un borrador mental sí ayuda. Así que el
+efecto neto no se predice: `off` baja la latencia por llamada y puede subir los reintentos, y cada
+reintento es una llamada entera.
+
+Medido en llamadas reales, segundos por llamada al modelo:
+
+| Esfuerzo | Medidas | Media |
+|---|---|---|
+| `low` | 21,4 · 27,0 · 32,4 | **26,9 s** |
+| `high` | 54,9 · 33,9 · 84,9 | **57,9 s** |
+| `off` | — | lo que mida la próxima carga |
+
+`high` cuesta más del doble que `low`, y `low` no es utilizable porque su disponibilidad depende de
+qué adaptador resolviera npm. Por eso el defecto está en **`off`**: es la comparación que falta, y la
+próxima carga normal la cierra sin tener que pasar parámetros a mano.
+
+Si las fichas salen planas, o si suben los rechazos de longitud (`entradaLarga`, `largo:seoTitle`,
+`bulletLargo` — contar caracteres es justo donde un borrador mental ayuda), se vuelve a `high` en una
+línea. Nada se publica sin revisar, así que el experimento no tiene coste de producto.
+
+El parámetro `reasoningEffort` de `catalog_describe` pisa la configuración solo en esa llamada, si
+quieres comparar dos sobre los mismos productos en la misma sesión:
+
+```
+catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "off")
+catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "high")
+catalog_seo(limit: 4)     # y leer las fichas de cada uno
+```
+
+Se comparan `segundosPorLlamada`, `intentosMedios` y `rechazos`, que el resumen ya trae, y el propio
+resumen dice con qué `esfuerzo` se hizo cada lote.
+
 ### Nada se publica sin revisar
 
 El punto 7 del artículo pide revisión humana, y Google trata el contenido generado a escala sin
@@ -426,10 +513,15 @@ valor añadido como *scaled content abuse*. Así que las fichas nacen con `revie
 etapa 5 solo publicará las aprobadas:
 
 ```
-catalog_review(sku: "000048")     # una
-catalog_review(skus: [...])       # varias
-catalog_review(all: true)         # todas las pendientes
+catalog_seo(soloSinRevisar: true)   # verlas ANTES de aprobar
+catalog_review(sku: "000048")       # una
+catalog_review(skus: [...])         # varias
+catalog_review(all: true)           # todas las pendientes
 ```
+
+`catalog_seo` existe porque sin él la puerta no se puede cumplir: `catalog_describe` solo devuelve
+una ficha de muestra, y el preset no monta ninguna herramienta de ficheros, así que ver las otras
+tres exigía abrir el JSON a mano.
 
 La persona del preset le dice al agente que no apruebe lo que ha escrito él, y que `all: true` es
 solo para cuando lo pide el usuario después de ver las fichas. Es una convención sostenida por el
@@ -506,9 +598,8 @@ lanzas es la raíz de workspace de la sesión.
 |---|---|
 | `dsh-plugin/lib/*.js` | Reiniciar dsh + sesión nueva |
 | `catalog.config.yml` (`description`, `source.dirs`) | Nada: se relee en cada llamada, incluidos los límites del prompt y el presupuesto del modelo |
-| `dsh-plugin/package.json` (dependencias) | `npm install` en `dsh-plugin/`, reiniciar + sesión nueva |
+| `dsh-plugin/package.json` (dependencias) | `npm install` en `dsh-plugin/`, reiniciar + sesión nueva. **El pin de `dsh.sh` va a la par**: el adaptador de DeepSeek cambia entre versiones |
 | `agent.cordis.yml` o `preset.yml` | `cp` al preset desplegado + sesión nueva. **Sin reiniciar** |
-| `catalog.config.yml` | Nada: `catalog_load` lo relee en cada llamada |
 | `catalogo.example.csv` o los tests | `npm test`. A dsh no le afecta |
 | Nombre del paquete, o ruta del repo | `plugin --profile web remove <nombre-viejo>` + `add "$PWD/dsh-plugin"`, y reiniciar |
 | `~/.dsh/skills/*/SKILL.md` | Nada: se recoge en caliente |
@@ -582,7 +673,7 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 │   ├── lib/index.js          # las herramientas registradas en el registro `tools`
 │   ├── lib/catalog.js        # etapas 1 y 2: leer el fichero y normalizar cada fila
 │   ├── lib/seo.js            # etapa 3: el prompt, el parser de bloques y la validación
-│   └── test/                 # 72 tests con `node --test`, sin claves ni red
+│   └── test/                 # 80 tests con `node --test`, sin claves ni red
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
 ├── dsh.sh                    # despliega el plugin y arranca dsh, con sus comprobaciones
@@ -605,7 +696,7 @@ anonimizado. No hacen falta claves ni red:
 cd dsh-plugin && npm test          # node --test "test/*.test.js"
 ```
 
-Los 72 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
+Los 80 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
 envase, los precios con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las
 cuatro causas de rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un
 cliente nuevo trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**

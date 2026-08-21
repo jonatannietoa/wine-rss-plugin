@@ -321,14 +321,22 @@ export function validateDraft(draft, product, config, usados = {}) {
 
   validarCuerpo(draft.bodyHtml, config, anota)
 
-  // La primera frase tiene que decir qué es el producto.
+  // La primera frase tiene que decir qué es el producto. Vale el tipo, su palabra
+  // principal o la categoría: hay grupos del ERP que se traducen a cubos
+  // genéricos (`Otros`, `Estuche`) y exigir esa palabra fuerza una frase que
+  // nadie escribiría —«es un otros»—, así que para esos el que tiene sentido es
+  // el de la categoría («vino»).
   const entrada = draft.bodyHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
   if (entrada && product.productType) {
     const texto = stripTags(entrada[1]).toLowerCase()
     const tipo = product.productType.toLowerCase()
-    const cabeza = tipo.split(/\s+/)[0]
-    if (!texto.includes(tipo) && !texto.includes(cabeza)) {
-      anota('entradaSinTipo', `la primera frase no dice qué es el producto: tiene que nombrar "${product.productType}"`)
+    const acepta = [tipo, tipo.split(/\s+/)[0], product.category?.toLowerCase()].filter(Boolean)
+    if (!acepta.some((palabra) => texto.includes(palabra))) {
+      anota(
+        'entradaSinTipo',
+        'la primera frase no dice qué es el producto: tiene que nombrar '
+        + acepta.map((palabra) => `"${palabra}"`).join(' o '),
+      )
     }
   }
 

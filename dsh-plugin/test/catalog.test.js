@@ -258,7 +258,7 @@ test('el plugin registra las herramientas del pipeline', () => {
   const registradas = registrar(configTemporal())
   assert.deepEqual(
     Object.keys(registradas).sort(),
-    ['catalog_describe', 'catalog_load', 'catalog_review', 'catalog_sources'],
+    ['catalog_describe', 'catalog_load', 'catalog_review', 'catalog_seo', 'catalog_sources'],
   )
 })
 

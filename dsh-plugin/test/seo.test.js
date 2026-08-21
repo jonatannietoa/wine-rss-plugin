@@ -180,6 +180,37 @@ test('la primera frase tiene que decir qué es el producto', () => {
   assert.match(problemas(con({ bodyHtml: vaga })).join(' '), /no dice qué es el producto/)
 })
 
+test('un tipo de producto genérico se satisface con la categoría', () => {
+  // El ERP traduce el grupo OTROS a productType "Otros", y exigir esa palabra
+  // fuerza una frase que nadie escribiría: «es un otros».
+  const otros = { ...TINTO, productType: 'Otros', category: 'VINO' }
+  const natural = con({
+    bodyHtml: '<p>Un vino generoso seco, para tomar frio antes de comer.</p>'
+      + '<ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>',
+  })
+  assert.deepEqual(problemas(natural, otros), [], 'nombra la categoría, y con eso basta')
+
+  // Pero si no dice ni el tipo ni la categoría, sigue rebotando.
+  const vaga = con({ bodyHtml: '<p>Una joya de la casa.</p><ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>' })
+  assert.match(problemas(vaga, otros).join(' '), /no dice qué es el producto/)
+  // Y el mensaje dice las tres cosas que valen, no solo la absurda.
+  assert.match(problemas(vaga, otros).join(' '), /"otros" o "vino"/)
+})
+
+test('el resumen dice cuánto se razonó como máximo, para ver si el presupuesto va justo', async () => {
+  const llm = {
+    async *stream() {
+      yield { type: 'reasoning-delta', index: 0, text: 'x'.repeat(9000) }
+      yield { type: 'text-delta', index: 0, text: enBloques(VALIDO) }
+    },
+  }
+  const { tools } = await conCatalogoCargado(llm, (c) => { c.description.maxTokens = 16000 })
+  const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  assert.equal(resultado.generados, 1)
+  assert.equal(resultado.razonamientoMaximo, 9000, 'se ve aunque la ficha salga bien')
+  assert.equal(resultado.maxTokensConfigurado, 16000)
+})
+
 test('dos fichas no pueden compartir el texto', () => {
   const usados = { textos: new Set([`bodyHtml:${VALIDO.bodyHtml}`]) }
   assert.match(problemas(VALIDO, TINTO, usados).join(' '), /idéntico al de otro producto/)
@@ -430,6 +461,125 @@ test('la tienda puede redactar con un modelo distinto al de la sesión', async (
   })
   await tools.catalog_describe.execute({ sku: '000101' }, ejecucion({ provider: 'otro', model: 'flash' }))
   assert.equal(simulado.llamadas[0].model, 'deepseek-v4-pro', 'manda la configuración, no la sesión')
+})
+
+test('la sonda del primer producto se salta si ya hay pruebas de que el modelo va', async () => {
+  const distintas = ['a', 'b', 'c', 'd'].map((s) => enBloques(con({
+    handle: `ficha-${s}`,
+    seoDescription: `${VALIDO.seoDescription} Variante ${s} distinta de las demas del lote.`,
+    bodyHtml: VALIDO.bodyHtml.replace('barrica', `barrica ${s}`),
+    feedDescription: `${VALIDO.feedDescription} Variante ${s}.`,
+  })))
+
+  const enVuelo = { ahora: 0, maximo: 0 }
+  const llm = {
+    async *stream() {
+      enVuelo.ahora += 1
+      enVuelo.maximo = Math.max(enVuelo.maximo, enVuelo.ahora)
+      await new Promise((listo) => setTimeout(listo, 20))
+      enVuelo.ahora -= 1
+      yield { type: 'text-delta', index: 0, text: distintas.shift() ?? '' }
+    },
+  }
+  const { tools, configPath } = await conCatalogoCargado(llm, (c) => { c.description.concurrency = 4 })
+
+  // Primera carga: no hay nada escrito, así que sondea y el primero va solo.
+  const primera = await tools.catalog_describe.execute({ limit: 2 }, ejecucion())
+  assert.equal(primera.sonda, true)
+  assert.equal(enVuelo.maximo, 1, 'el primero va solo')
+
+  // Segunda: ya hay fichas de este modelo, así que los dos van a la vez.
+  enVuelo.maximo = 0
+  const { catalog_describe: otra } = registrar(configPath, llm)
+  const segunda = await otra.execute({ limit: 2, regenerate: 'always' }, ejecucion())
+  assert.equal(segunda.sonda, false, 'ya hay pruebas de que el modelo funciona')
+  assert.ok(enVuelo.maximo > 1, `deberían solaparse, y la concurrencia observada fue ${enVuelo.maximo}`)
+})
+
+test('sin sonda, un fallo sistémico sigue cortando el lote', async () => {
+  const { tools, configPath } = await conCatalogoCargado(
+    llmSimulado([enBloques(VALIDO)]).llm,
+    (c) => { c.description.probeFirst = 'never'; c.description.concurrency = 2 },
+  )
+  // Primero una ficha buena para que el almacén no esté vacío.
+  await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+
+  // Ahora el modelo deja de responder: el primer trozo falla entero.
+  const { catalog_describe: mudo } = registrar(configPath, llmSimulado(Array(12).fill('')).llm)
+  const resultado = await mudo.execute({ limit: 6 }, ejecucion())
+  assert.equal(resultado.sonda, false)
+  assert.equal(resultado.generados, 0)
+  assert.ok(resultado.cortado > 0, 'el lote se corta aunque no haya sonda')
+})
+
+test('el resumen dice cuánto ha tardado y cuánto tarda una llamada', async () => {
+  const llm = {
+    async *stream() {
+      await new Promise((listo) => setTimeout(listo, 60))
+      yield { type: 'text-delta', index: 0, text: enBloques(VALIDO) }
+    },
+  }
+  const { tools } = await conCatalogoCargado(llm)
+  const resultado = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  assert.ok(resultado.segundosPorLlamada >= 0.05, `midió ${resultado.segundosPorLlamada}s`)
+  assert.ok(resultado.segundos >= resultado.segundosPorLlamada)
+})
+
+test('el parámetro reasoningEffort pisa la configuración solo en esa llamada', async () => {
+  const simulado = llmSimulado([enBloques(VALIDO), enBloques(VALIDO)])
+  const { tools } = await conCatalogoCargado(simulado.llm, (c) => { c.description.reasoningEffort = 'low' })
+
+  const conConfig = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  assert.equal(simulado.llamadas[0].reasoningEffort, 'low')
+  assert.equal(conConfig.esfuerzo, 'low')
+
+  const pisado = await tools.catalog_describe.execute(
+    { sku: '000101', regenerate: 'always', reasoningEffort: 'off' }, ejecucion(),
+  )
+  assert.equal(simulado.llamadas[1].reasoningEffort, 'off', 'manda el parámetro')
+  assert.equal(pisado.esfuerzo, 'off', 'y el resumen lo dice, o el A/B no se puede comparar')
+})
+
+test('un esfuerzo que el proveedor no acepta se explica en vez de reventar', async () => {
+  const llm = {
+    // Lo que hace el adaptador de DeepSeek con un valor que no conoce.
+    async *stream() {
+      const error = new Error('DeepSeek does not support reasoning effort "medium"')
+      error.code = 'UNSUPPORTED_REASONING_EFFORT'
+      throw error
+    },
+  }
+  const { tools } = await conCatalogoCargado(llm)
+  await assert.rejects(
+    () => tools.catalog_describe.execute({ sku: '000101', reasoningEffort: 'medium' }, ejecucion()),
+    (error) => /no acepta el esfuerzo de razonamiento "medium"/.test(error.message)
+      && /description\.reasoningEffort/.test(error.message)
+      && /low solo desde rc\.8/.test(error.message),
+  )
+})
+
+test('catalog_seo devuelve las fichas guardadas para poder leerlas', async () => {
+  const simulado = llmSimulado([enBloques(VALIDO)])
+  const { tools, configPath } = await conCatalogoCargado(simulado.llm)
+  await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+
+  const { catalog_seo: leer } = registrar(configPath)
+  const todo = await leer.execute({})
+  assert.equal(todo.total, 1)
+  assert.equal(todo.sinRevisar, 1)
+  assert.equal(todo.fichas[0].seoTitle, VALIDO.seoTitle)
+
+  const una = await leer.execute({ sku: '000101' })
+  assert.equal(una.fichas.length, 1)
+
+  const ninguna = await leer.execute({ sku: 'NO-EXISTE' })
+  assert.deepEqual(ninguna.noEncontrados, ['NO-EXISTE'])
+  assert.equal(ninguna.fichas.length, 0)
+
+  // Y el render las enseña de verdad: es lo que ve el usuario antes de aprobar.
+  const texto = leer.output.render({}, todo)[0].text
+  assert.match(texto, /SIN revisar/)
+  assert.match(texto, /bodyHtml/)
 })
 
 test('catalog_review es lo que convierte una ficha en publicable', async () => {
