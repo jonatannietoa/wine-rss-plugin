@@ -22,10 +22,10 @@ En el resumen de `catalog_describe`:
 
 | Número | Qué decide |
 |---|---|
-| `segundosPorLlamada` | Si `off` baja de los 57,9 s de `high`. Es latencia del proveedor: no baja paralelizando |
-| `intentosMedios` | Si sube por encima de ~1,3, `off` está costando reintentos y cada uno es una llamada entera |
-| `rechazos` | **La clave.** Si suben `entradaLarga`, `largo:seoTitle` o `bulletLargo`, es que sin razonamiento el modelo cuenta peor los caracteres |
-| `razonamientoMaximo` | Con `off` debe ser 0. Si no lo es, `off` no está llegando al proveedor |
+| `secondsPerCall` | Si `off` baja de los 57,9 s de `high`. Es latencia del proveedor: no baja paralelizando |
+| `averageAttempts` | Si sube por encima de ~1,3, `off` está costando reintentos y cada uno es una llamada entera |
+| `rejections` | **La clave.** Si suben `entradaLarga`, `largo:seoTitle` o `bulletLargo`, es que sin razonamiento el modelo cuenta peor los caracteres |
+| `peakReasoningChars` | Con `off` debe ser 0. Si no lo es, `off` no está llegando al proveedor |
 | Las fichas, con `catalog_seo` | Si la prosa sale plana. Esto no lo dice ningún número |
 
 ### La decisión
@@ -33,7 +33,7 @@ En el resumen de `catalog_describe`:
 - `off` más rápido **y** sin subir rechazos → se queda en `off`.
 - `off` sube los rechazos de longitud → volver a `high` (una línea en `catalog.config.yml`).
 - Caso intermedio (más rápido pero con algún rechazo más): gana el que dé menos **tiempo total**,
-  porque un reintento cuesta una llamada entera. `segundos` del resumen ya lo dice.
+  porque un reintento cuesta una llamada entera. `seconds` del resumen ya lo dice.
 
 Ninguna ficha se publica sin pasar por `catalog_review`, así que el experimento no puede llegar a la
 tienda.
@@ -63,7 +63,7 @@ gastaba el presupuesto de salida razonando y no escribía nada. **El razonamient
 
 Arreglado subiendo el tope y sacándolo a configuración. Se pasó de 7 fallos sobre ~13 llamadas a
 1 sobre 9, y luego 1 sobre 14. **No ha desaparecido del todo**: si `sinTexto` reaparece, mirar
-`razonamientoMaximo` contra `maxTokens` × 3 y subir el tope.
+`peakReasoningChars` contra `maxTokens` × 3 y subir el tope.
 
 ### 3.2 Cuatro productos en cinco minutos (`session-4productos-5minutos`)
 
@@ -111,7 +111,7 @@ que un redactor escribiría igual.
 
 **Las llamadas internas del plugin (`ctx.llm.stream`) no aparecen en el `session.jsonl`.** Todos los
 `usage` de esos ficheros son de los turnos del agente. Por eso el resumen de `catalog_describe`
-instrumenta el tiempo por su cuenta (`segundos`, `segundosPorLlamada`, `razonamientoMaximo`): sin eso
+instrumenta el tiempo por su cuenta (`seconds`, `secondsPerCall`, `peakReasoningChars`): sin eso
 no hay forma de saber cuánto tarda la etapa 3.
 
 ## 4. Trampas de operación
@@ -171,7 +171,7 @@ y crea los productos con las descripciones y SEO
 
 Eso ya mide `off` (es el defecto). Luego:
 
-1. Leer el resumen: `segundosPorLlamada`, `intentosMedios`, `rechazos`, `razonamientoMaximo`.
+1. Leer el resumen: `secondsPerCall`, `averageAttempts`, `rejections`, `peakReasoningChars`.
 2. `catalog_seo(limit: 11)` para leer las fichas y juzgar la prosa.
 3. Comparar con la tabla de la sección 1 y decidir `off` o `high`.
 4. Si se queda en `off`, quitar de `catalog.config.yml` el comentario que dice que es provisional.
@@ -202,7 +202,7 @@ queda dentro de ella.
 
 Por orden de valor:
 
-1. **Ajustar los límites que sobren**, con `rechazos` de varias cargas como evidencia.
+1. **Ajustar los límites que sobren**, con `rejections` de varias cargas como evidencia.
 2. **Etapa 4 (imagen)**: el contrato está en el bloque `image` de `catalog.config.yml`. `altText` ya
    se genera en la etapa 3, así que la 4 solo tiene que buscar o generar el fichero.
 3. **Etapa 5 (Shopify)**: contrato en el bloque `shopify`. Arranca en `dryRun: true`, y publicar de

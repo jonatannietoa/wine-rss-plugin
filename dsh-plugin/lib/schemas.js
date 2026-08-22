@@ -10,15 +10,15 @@
 
 /** Un campo del modelo que el fichero puede no traer. */
 export
-const nulable = (type) => ({ oneOf: [{ type }, { type: 'null' }] })
+const nullable = (type) => ({ oneOf: [{ type }, { type: 'null' }] })
 
 /** Recuento con nombre, para los histogramas del resumen. */
 export
-const recuento = (clave) => ({
+const tally = (key) => ({
   type: 'object',
   additionalProperties: false,
   properties: {
-    [clave]: { type: 'string', required: true },
+    [key]: { type: 'string', required: true },
     count: { type: 'integer', required: true },
   },
 })
@@ -32,22 +32,22 @@ const PRODUCT_SCHEMA = {
     sku: { type: 'string', required: true },
     titleRaw: { type: 'string', required: true, description: 'El nombre tal cual lo manda el ERP.' },
     title: { type: 'string', required: true, description: 'El nombre ya capitalizado y sin el formato.' },
-    format: { ...nulable('string'), required: true },
-    volumeMl: { ...nulable('integer'), required: true },
+    format: { ...nullable('string'), required: true },
+    volumeMl: { ...nullable('integer'), required: true },
     group: { type: 'string', required: true, description: 'El código de grupo del ERP.' },
     productType: { type: 'string', required: true, description: 'El tipo de producto legible con el que se categoriza en Shopify.' },
-    category: { ...nulable('string'), required: true },
-    origin: { ...nulable('string'), required: true },
-    countryCode: { ...nulable('string'), required: true },
-    productionType: { ...nulable('string'), required: true },
+    category: { ...nullable('string'), required: true },
+    origin: { ...nullable('string'), required: true },
+    countryCode: { ...nullable('string'), required: true },
+    productionType: { ...nullable('string'), required: true },
     tags: { type: 'array', required: true, items: { type: 'string' } },
     price: { type: 'number', required: true },
-    cost: { ...nulable('number'), required: true },
+    cost: { ...nullable('number'), required: true },
     stock: { type: 'integer', required: true },
     blocked: { type: 'boolean', required: true },
-    supplierCode: { ...nulable('string'), required: true },
-    vendor: { ...nulable('string'), required: true },
-    modifiedAt: { ...nulable('string'), required: true },
+    supplierCode: { ...nullable('string'), required: true },
+    vendor: { ...nullable('string'), required: true },
+    modifiedAt: { ...nullable('string'), required: true },
     warnings: {
       type: 'array',
       required: true,

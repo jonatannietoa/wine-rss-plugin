@@ -34,19 +34,19 @@ export function loadConfig(configPath) {
   }
   if (!raw || typeof raw !== 'object') throw new Error(`la configuración en ${path} está vacía`)
 
-  const problemas = []
-  if (!raw.source?.path) problemas.push('falta source.path')
+  const problems = []
+  if (!raw.source?.path) problems.push('falta source.path')
   if (raw.source?.format !== 'csv') {
-    problemas.push(`source.format debe ser "csv" (dice "${raw.source?.format ?? 'nada'}"): esta etapa solo lee CSV`)
+    problems.push(`source.format debe ser "csv" (dice "${raw.source?.format ?? 'nada'}"): esta etapa solo lee CSV`)
   }
-  for (const clave of REQUIRED_COLUMNS) {
-    if (!raw.columns?.[clave]) problemas.push(`falta columns.${clave}`)
+  for (const key of REQUIRED_COLUMNS) {
+    if (!raw.columns?.[key]) problems.push(`falta columns.${key}`)
   }
   if (!raw.taxonomy?.groups || typeof raw.taxonomy.groups !== 'object') {
-    problemas.push('falta taxonomy.groups: sin él no hay con qué categorizar en Shopify')
+    problems.push('falta taxonomy.groups: sin él no hay con qué categorizar en Shopify')
   }
-  if (problemas.length > 0) {
-    throw new Error(`configuración inválida en ${path}: ${problemas.join('; ')}`)
+  if (problems.length > 0) {
+    throw new Error(`configuración inválida en ${path}: ${problems.join('; ')}`)
   }
 
   return { ...raw, baseDir: dirname(path) }
@@ -61,9 +61,9 @@ export function loadConfig(configPath) {
  * @returns la ruta absoluta.
  */
 export function resolveFromConfig(config, path) {
-  const texto = String(path ?? '')
-  if (texto === '~' || texto.startsWith(`~${sep}`) || texto.startsWith('~/')) {
-    return join(homedir(), texto.slice(1))
+  const text = String(path ?? '')
+  if (text === '~' || text.startsWith(`~${sep}`) || text.startsWith('~/')) {
+    return join(homedir(), text.slice(1))
   }
-  return isAbsolute(texto) ? texto : resolve(config.baseDir ?? '.', texto)
+  return isAbsolute(text) ? text : resolve(config.baseDir ?? '.', text)
 }

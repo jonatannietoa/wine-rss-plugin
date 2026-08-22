@@ -17,7 +17,7 @@ import { resolveFromConfig } from '../../config.js'
  * @param config - la configuración cargada.
  * @returns la ruta absoluta del JSON.
  */
-export function rutaCatalogo(config) {
+export function catalogPath(config) {
   return resolveFromConfig(config, config.output?.catalogJson ?? './.artifacts/catalog.json')
 }
 
@@ -27,8 +27,8 @@ export function rutaCatalogo(config) {
  * @param catalog - el catálogo con sus productos y sus rechazos.
  * @returns la ruta donde ha quedado.
  */
-export function guardarCatalogo(config, catalog) {
-  const path = rutaCatalogo(config)
+export function saveCatalog(config, catalog) {
+  const path = catalogPath(config)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')
   return path

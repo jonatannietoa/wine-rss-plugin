@@ -24,7 +24,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { loadConfig } from './config.js'
-import { DRAFT_SCHEMA, PRODUCT_SCHEMA, nulable, recuento } from './schemas.js'
+import { DRAFT_SCHEMA, PRODUCT_SCHEMA, nullable, tally } from './schemas.js'
 import { loadCatalog } from './catalog-load/application/load-catalog.js'
 import { listCatalogSources } from './catalog-load/application/list-sources.js'
 import { describeCatalog } from './catalog-describe/application/describe-catalog.js'
@@ -45,39 +45,39 @@ export const Config = z.object({
  * @param value - el resumen que devolvió el tool.
  * @returns las líneas del informe.
  */
-function informe(value) {
+function report(value) {
   const partes = [
     `Catálogo cargado desde ${value.sourcePath}: ${value.ok} productos de ${value.total} filas.`
-    + `${value.rechazados > 0 ? ` ${value.rechazados} filas rechazadas.` : ''}`
-    + `${value.omitidosPorFecha > 0 ? ` ${value.omitidosPorFecha} sin cambios desde la fecha pedida.` : ''}`,
+    + `${value.rejected > 0 ? ` ${value.rejected} filas rechazadas.` : ''}`
+    + `${value.skippedByDate > 0 ? ` ${value.skippedByDate} sin cambios desde la fecha pedida.` : ''}`,
     `JSON completo en ${value.outputPath}`,
   ]
 
-  if (value.porGrupo.length > 0) {
+  if (value.byProductType.length > 0) {
     partes.push(
       'Por tipo de producto:\n'
-      + value.porGrupo.map((g) => `  ${g.productType}: ${g.count}`).join('\n'),
+      + value.byProductType.map((g) => `  ${g.productType}: ${g.count}`).join('\n'),
     )
   }
-  if (value.avisos.length > 0) {
-    partes.push('Avisos: ' + value.avisos.map((a) => `${a.code} (${a.count})`).join(', '))
+  if (value.warnings.length > 0) {
+    partes.push('Avisos: ' + value.warnings.map((a) => `${a.code} (${a.count})`).join(', '))
   }
-  if (value.columnasAusentes.length > 0) {
+  if (value.absentColumns.length > 0) {
     partes.push(
       'Columnas declaradas en la configuración que el fichero NO trae: '
-      + `${value.columnasAusentes.join(', ')}. Esos campos van vacíos en todos los productos.`,
+      + `${value.absentColumns.join(', ')}. Esos campos van vacíos en todos los productos.`,
     )
   }
-  if (value.rechazos.length > 0) {
+  if (value.rejections.length > 0) {
     partes.push(
-      `Filas rechazadas${value.rechazados > value.rechazos.length ? ` (las ${value.rechazos.length} primeras de ${value.rechazados})` : ''}:\n`
-      + value.rechazos.map((r) => `  línea ${r.row} ${r.sku ?? '(sin sku)'}: ${r.reason}`).join('\n'),
+      `Filas rechazadas${value.rejected > value.rejections.length ? ` (las ${value.rejections.length} primeras de ${value.rejected})` : ''}:\n`
+      + value.rejections.map((r) => `  línea ${r.row} ${r.sku ?? '(sin sku)'}: ${r.reason}`).join('\n'),
     )
   }
   if (value.producto) {
     partes.push(`Producto pedido:\n${JSON.stringify(value.producto, null, 2)}`)
-  } else if (value.muestra.length > 0) {
-    partes.push(`Muestra de cómo queda un producto:\n${JSON.stringify(value.muestra[0], null, 2)}`)
+  } else if (value.sample.length > 0) {
+    partes.push(`Muestra de cómo queda un producto:\n${JSON.stringify(value.sample[0], null, 2)}`)
   }
   return partes.join('\n\n')
 }
@@ -128,12 +128,12 @@ export function apply(ctx, config) {
           sourcePath: { type: 'string', required: true, description: 'El fichero que se ha leído.' },
           total: { type: 'integer', required: true, description: 'Filas leídas del fichero, sin contar la cabecera.' },
           ok: { type: 'integer', required: true, description: 'Productos publicables.' },
-          rechazados: { type: 'integer', required: true },
-          omitidosPorFecha: { type: 'integer', required: true },
-          porGrupo: { type: 'array', required: true, items: recuento('productType') },
-          avisos: { type: 'array', required: true, items: recuento('code') },
-          columnasAusentes: { type: 'array', required: true, items: { type: 'string' } },
-          rechazos: {
+          rejected: { type: 'integer', required: true },
+          skippedByDate: { type: 'integer', required: true },
+          byProductType: { type: 'array', required: true, items: tally('productType') },
+          warnings: { type: 'array', required: true, items: tally('code') },
+          absentColumns: { type: 'array', required: true, items: { type: 'string' } },
+          rejections: {
             type: 'array',
             required: true,
             description: 'Las primeras filas rechazadas, con el motivo. No están en el JSON de productos.',
@@ -142,23 +142,23 @@ export function apply(ctx, config) {
               additionalProperties: false,
               properties: {
                 row: { type: 'integer', required: true },
-                sku: { ...nulable('string'), required: true },
+                sku: { ...nullable('string'), required: true },
                 reason: { type: 'string', required: true },
               },
             },
           },
-          muestra: { type: 'array', required: true, items: PRODUCT_SCHEMA },
+          sample: { type: 'array', required: true, items: PRODUCT_SCHEMA },
           producto: { oneOf: [PRODUCT_SCHEMA, { type: 'null' }], required: true },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: informe(value) }],
+      render: (_args, value) => [{ type: 'text', text: report(value) }],
     },
     // Escribe siempre el mismo fichero de salida, así que dos cargas en paralelo
     // se pisarían.
     isConcurrencySafe: () => false,
     async execute(args) {
-      const dominio = loadConfig(config.configPath)
-      return loadCatalog(dominio, args)
+      const domainConfig = loadConfig(config.configPath)
+      return loadCatalog(domainConfig, args)
     },
     presentCall: (args) => ({
       card: 'generic',
@@ -192,11 +192,11 @@ export function apply(ctx, config) {
               additionalProperties: false,
               properties: {
                 dir: { type: 'string', required: true },
-                existe: { type: 'boolean', required: true },
+                exists: { type: 'boolean', required: true },
               },
             },
           },
-          habitual: { type: 'string', required: true, description: 'El catálogo que se carga si no se pide otro.' },
+          defaultSource: { type: 'string', required: true, description: 'El catálogo que se carga si no se pide otro.' },
           files: {
             type: 'array',
             required: true,
@@ -209,9 +209,9 @@ export function apply(ctx, config) {
                 path: { type: 'string', required: true },
                 bytes: { type: 'integer', required: true },
                 modifiedAt: { type: 'string', required: true },
-                rows: { ...nulable('integer'), required: true },
+                rows: { ...nullable('integer'), required: true },
                 compatible: { type: 'boolean', required: true },
-                problema: { ...nulable('string'), required: true },
+                issue: { ...nullable('string'), required: true },
               },
             },
           },
@@ -220,27 +220,27 @@ export function apply(ctx, config) {
       render: (_args, value) => {
         const partes = []
         if (value.files.length === 0) {
-          const sinCrear = value.dirs.filter((d) => !d.existe).map((d) => d.dir)
+          const notCreated = value.dirs.filter((d) => !d.exists).map((d) => d.dir)
           partes.push(
             'No hay ningún fichero en las bandejas de entrada'
             + `${value.dirs.length > 0 ? `: ${value.dirs.map((d) => d.dir).join(', ')}` : ' (ninguna configurada)'}.`
-            + `${sinCrear.length > 0 ? ` Sin crear todavía: ${sinCrear.join(', ')}.` : ''}`,
+            + `${notCreated.length > 0 ? ` Sin crear todavía: ${notCreated.join(', ')}.` : ''}`,
           )
         } else {
           for (const { dir } of value.dirs) {
-            const suyos = value.files.filter((f) => f.dir === dir)
-            if (suyos.length === 0) continue
+            const own = value.files.filter((f) => f.dir === dir)
+            if (own.length === 0) continue
             partes.push(
-              `En ${dir}:\n` + suyos
+              `En ${dir}:\n` + own
                 .map((f) => `  ${f.compatible ? '✓' : '✗'} ${f.name}`
                   + `${f.rows === null ? '' : ` — ${f.rows} filas`}`
                   + ` — modificado ${f.modifiedAt}`
-                  + `${f.problema ? `\n      ${f.problema}` : ''}`)
+                  + `${f.issue ? `\n      ${f.issue}` : ''}`)
                 .join('\n'),
             )
           }
         }
-        partes.push(`El catálogo habitual de la tienda, si no se pide otro, es ${value.habitual}.`)
+        partes.push(`El catálogo habitual de la tienda, si no se pide otro, es ${value.defaultSource}.`)
         return [{ type: 'text', text: partes.join('\n\n') }]
       },
     },
@@ -303,48 +303,48 @@ export function apply(ctx, config) {
         properties: {
           outputPath: { type: 'string', required: true },
           sourcePath: { type: 'string', required: true, description: 'El fichero del que salió el catálogo cargado.' },
-          modelo: { type: 'string', required: true, description: 'El modelo de la sesión que ha redactado.' },
-          solicitados: { type: 'integer', required: true },
-          generados: { type: 'integer', required: true },
-          fallidos: { type: 'integer', required: true },
-          cortado: {
+          model: { type: 'string', required: true, description: 'El modelo de la sesión que ha redactado.' },
+          requested: { type: 'integer', required: true },
+          written: { type: 'integer', required: true },
+          failed: { type: 'integer', required: true },
+          skipped: {
             type: 'integer',
             required: true,
             description: 'Productos que no se intentaron porque el fallo era del modelo, no de los datos.',
           },
-          llamadas: { type: 'integer', required: true, description: 'Llamadas al modelo que ha costado el lote.' },
-          segundos: { type: 'number', required: true, description: 'Lo que ha tardado el lote de pared.' },
-          razonamientoMaximo: {
+          calls: { type: 'integer', required: true, description: 'Llamadas al modelo que ha costado el lote.' },
+          seconds: { type: 'number', required: true, description: 'Lo que ha tardado el lote de pared.' },
+          peakReasoningChars: {
             type: 'integer',
             required: true,
             description: 'Caracteres de razonamiento de la llamada que más razonó. Si se acerca a description.maxTokens × 3, el presupuesto va al filo y habrá respuestas vacías.',
           },
-          segundosPorLlamada: {
+          secondsPerCall: {
             type: 'number',
             required: true,
             description: 'Media por llamada al modelo. Es la latencia del proveedor: no baja paralelizando, solo cambiando de modelo.',
           },
-          esfuerzo: { type: 'string', required: true, description: 'Esfuerzo de razonamiento con el que se ha redactado.' },
-          maxTokensConfigurado: { type: 'integer', required: true, description: 'El presupuesto por llamada, para poder compararlo con lo que se razonó.' },
-          sonda: {
+          effort: { type: 'string', required: true, description: 'Esfuerzo de razonamiento con el que se ha redactado.' },
+          maxTokens: { type: 'integer', required: true, description: 'El presupuesto por llamada, para poder compararlo con lo que se razonó.' },
+          probed: {
             type: 'boolean',
             required: true,
             description: 'Si el primer producto se ha redactado solo antes de paralelizar el resto.',
           },
-          intentosMedios: {
+          averageAttempts: {
             type: 'number',
             required: true,
             description: 'Intentos por ficha escrita. Cerca de 1 es lo bueno; cerca de 3 significa que el modelo pelea con las reglas.',
           },
-          rechazos: {
+          rejections: {
             type: 'array',
             required: true,
             description: 'Qué reglas han rechazado borradores y cuántas veces. Es lo que dice qué optimizar.',
-            items: recuento('code'),
+            items: tally('code'),
           },
-          pendientes: { type: 'integer', required: true, description: 'Productos del catálogo que siguen sin ficha.' },
-          sinRevisar: { type: 'integer', required: true, description: 'Fichas generadas que nadie ha revisado aún.' },
-          fallos: {
+          pending: { type: 'integer', required: true, description: 'Productos del catálogo que siguen sin ficha.' },
+          unreviewed: { type: 'integer', required: true, description: 'Fichas generadas que nadie ha revisado aún.' },
+          failures: {
             type: 'array',
             required: true,
             description: 'Productos cuyos borradores no pasaron la validación, con lo que falló en el último intento.',
@@ -353,14 +353,14 @@ export function apply(ctx, config) {
               additionalProperties: false,
               properties: {
                 sku: { type: 'string', required: true },
-                problemas: { type: 'array', required: true, items: { type: 'string' } },
-                caracteresTexto: { type: 'integer', required: true, description: 'Cuánto texto devolvió el modelo en el último intento.' },
-                caracteresRazonamiento: { type: 'integer', required: true, description: 'Cuánto razonó. Mucho aquí y cero arriba significa presupuesto agotado pensando.' },
-                respuestaCruda: { type: 'string', required: true, description: 'El principio de lo que devolvió, para poder verlo.' },
+                problems: { type: 'array', required: true, items: { type: 'string' } },
+                textChars: { type: 'integer', required: true, description: 'Cuánto texto devolvió el modelo en el último intento.' },
+                reasoningChars: { type: 'integer', required: true, description: 'Cuánto razonó. Mucho aquí y cero arriba significa presupuesto agotado pensando.' },
+                rawResponse: { type: 'string', required: true, description: 'El principio de lo que devolvió, para poder verlo.' },
               },
             },
           },
-          muestra: { type: 'array', required: true, items: DRAFT_SCHEMA },
+          sample: { type: 'array', required: true, items: DRAFT_SCHEMA },
           prompt: {
             required: true,
             oneOf: [
@@ -386,51 +386,51 @@ export function apply(ctx, config) {
           }]
         }
         const partes = [
-          `${value.generados} de ${value.solicitados} fichas escritas con ${value.modelo}`
-          + ` en ${value.segundos}s`
-          + ` y ${value.llamadas} ${value.llamadas === 1 ? 'llamada' : 'llamadas'} al modelo`
-          + `${value.intentosMedios > 0 ? ` (${value.intentosMedios} intentos por ficha)` : ''}.`
-          + `${value.fallidos > 0 ? ` ${value.fallidos} no pasaron la validación.` : ''}`,
-          `Cada llamada tarda ${value.segundosPorLlamada}s de media con razonamiento "${value.esfuerzo}":`
+          `${value.written} de ${value.requested} fichas escritas con ${value.model}`
+          + ` en ${value.seconds}s`
+          + ` y ${value.calls} ${value.calls === 1 ? 'llamada' : 'calls'} al modelo`
+          + `${value.averageAttempts > 0 ? ` (${value.averageAttempts} intentos por ficha)` : ''}.`
+          + `${value.failed > 0 ? ` ${value.failed} no pasaron la validación.` : ''}`,
+          `Cada llamada tarda ${value.secondsPerCall}s de media con razonamiento "${value.effort}":`
           + ' eso es latencia del proveedor y no baja paralelizando.'
-          + `${value.razonamientoMaximo > 0 ? ` La llamada que más razonó gastó ${value.razonamientoMaximo} caracteres en ello, de un presupuesto de ${value.maxTokensConfigurado} tokens.` : ''}`
-          + `${value.sonda ? ' El primer producto ha ido solo (sonda de configuración), lo que cuesta una ronda entera; en la siguiente carga con este mismo modelo ya no hará falta.' : ''}`,
+          + `${value.peakReasoningChars > 0 ? ` La llamada que más razonó gastó ${value.peakReasoningChars} caracteres en ello, de un presupuesto de ${value.maxTokens} tokens.` : ''}`
+          + `${value.probed ? ' El primer producto ha ido solo (sonda de configuración), lo que cuesta una ronda entera; en la siguiente carga con este mismo model ya no hará falta.' : ''}`,
           `Del catálogo cargado desde ${value.sourcePath}.`
-          + ` Quedan ${value.pendientes} productos sin ficha. Sin revisar: ${value.sinRevisar}.`,
+          + ` Quedan ${value.pending} productos sin ficha. Sin revisar: ${value.unreviewed}.`,
           `Guardado en ${value.outputPath}`,
         ]
-        if (value.cortado > 0) {
+        if (value.skipped > 0) {
           partes.push(
             `He parado el lote: el primer producto falló sin que el modelo escribiera un solo bloque, `
-            + `así que el problema no es de los datos. Quedan ${value.cortado} sin intentar, y así se `
+            + `así que el problema no es de los datos. Quedan ${value.skipped} sin intentar, y así se `
             + 'ahorran otras tantas llamadas. Arregla lo de abajo y vuelve a lanzarlo.',
           )
         }
-        if (value.fallos.length > 0) {
-          partes.push('No pasaron la validación:\n' + value.fallos
-            .map((f) => `  ${f.sku} (devolvió ${f.caracteresTexto} caracteres de texto`
-              + `${f.caracteresRazonamiento > 0 ? ` y ${f.caracteresRazonamiento} de razonamiento` : ''}):\n`
-              + f.problemas.map((p) => `    - ${p}`).join('\n')
-              + `${f.respuestaCruda ? `\n    respuesta: "${f.respuestaCruda.slice(0, 200)}…"` : ''}`)
+        if (value.failures.length > 0) {
+          partes.push('No pasaron la validación:\n' + value.failures
+            .map((f) => `  ${f.sku} (devolvió ${f.textChars} caracteres de texto`
+              + `${f.reasoningChars > 0 ? ` y ${f.reasoningChars} de razonamiento` : ''}):\n`
+              + f.problems.map((p) => `    - ${p}`).join('\n')
+              + `${f.rawResponse ? `\n    respuesta: "${f.rawResponse.slice(0, 200)}…"` : ''}`)
             .join('\n'))
         }
-        if (value.rechazos.length > 0 && value.intentosMedios > 1.2) {
+        if (value.rejections.length > 0 && value.averageAttempts > 1.2) {
           partes.push(
             'Reglas que están costando llamadas:\n'
-            + value.rechazos.map((r) => `  ${r.code}: ${r.count}`).join('\n')
+            + value.rejections.map((r) => `  ${r.code}: ${r.count}`).join('\n')
             + '\nSi una domina, o se ajusta esa regla en `catalog.config.yml` o el modelo no la sigue bien.',
           )
         }
-        if (value.muestra.length > 0) {
-          const ficha = value.muestra[0]
+        if (value.sample.length > 0) {
+          const draft = value.sample[0]
           partes.push(
-            `Así ha quedado ${ficha.sku} (${ficha.attempts} ${ficha.attempts === 1 ? 'intento' : 'intentos'}):\n`
-            + `  seoTitle (${ficha.seoTitle.length}): ${ficha.seoTitle}\n`
-            + `  seoDescription (${ficha.seoDescription.length}): ${ficha.seoDescription}\n`
-            + `  handle: ${ficha.handle}\n`
-            + `  altText: ${ficha.altText}\n`
-            + `  bodyHtml: ${ficha.bodyHtml}\n`
-            + `  feedDescription: ${ficha.feedDescription}`,
+            `Así ha quedado ${draft.sku} (${draft.attempts} ${draft.attempts === 1 ? 'attempt' : 'intentos'}):\n`
+            + `  seoTitle (${draft.seoTitle.length}): ${draft.seoTitle}\n`
+            + `  seoDescription (${draft.seoDescription.length}): ${draft.seoDescription}\n`
+            + `  handle: ${draft.handle}\n`
+            + `  altText: ${draft.altText}\n`
+            + `  bodyHtml: ${draft.bodyHtml}\n`
+            + `  feedDescription: ${draft.feedDescription}`,
           )
         }
         partes.push('Ninguna ficha se publica sin pasar por catalog_review.')
@@ -440,8 +440,8 @@ export function apply(ctx, config) {
     // Escribe el mismo fichero y consume cuota del modelo: dos a la vez se pisan.
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const dominio = loadConfig(config.configPath)
-      return describeCatalog(ctx, dominio, args, exec, name)
+      const domainConfig = loadConfig(config.configPath)
+      return describeCatalog(ctx, domainConfig, args, exec, name)
     },
     presentCall: (args) => ({
       card: 'generic',
@@ -473,20 +473,20 @@ export function apply(ctx, config) {
         properties: {
           outputPath: { type: 'string', required: true },
           total: { type: 'integer', required: true, description: 'Fichas guardadas en total.' },
-          sinRevisar: { type: 'integer', required: true },
-          fichas: { type: 'array', required: true, items: DRAFT_SCHEMA },
-          noEncontrados: { type: 'array', required: true, items: { type: 'string' } },
+          unreviewed: { type: 'integer', required: true },
+          drafts: { type: 'array', required: true, items: DRAFT_SCHEMA },
+          notFound: { type: 'array', required: true, items: { type: 'string' } },
         },
       },
       render: (_args, value) => {
         if (value.total === 0) {
           return [{ type: 'text', text: `No hay ninguna ficha escrita todavía (${value.outputPath}).` }]
         }
-        const partes = [`${value.total} fichas guardadas, ${value.sinRevisar} sin revisar.`]
-        for (const f of value.fichas) {
+        const partes = [`${value.total} fichas guardadas, ${value.unreviewed} sin revisar.`]
+        for (const f of value.drafts) {
           partes.push(
             `${f.sku} — ${f.reviewed ? 'revisada' : 'SIN revisar'} · ${f.attempts} `
-            + `${f.attempts === 1 ? 'intento' : 'intentos'} · ${f.model}\n`
+            + `${f.attempts === 1 ? 'attempt' : 'intentos'} · ${f.model}\n`
             + `  seoTitle (${f.seoTitle.length}): ${f.seoTitle}\n`
             + `  seoDescription (${f.seoDescription.length}): ${f.seoDescription}\n`
             + `  handle: ${f.handle}\n`
@@ -495,8 +495,8 @@ export function apply(ctx, config) {
             + `  feedDescription: ${f.feedDescription}`,
           )
         }
-        if (value.noEncontrados.length > 0) {
-          partes.push(`Sin ficha: ${value.noEncontrados.join(', ')}`)
+        if (value.notFound.length > 0) {
+          partes.push(`Sin ficha: ${value.notFound.join(', ')}`)
         }
         return [{ type: 'text', text: partes.join('\n\n') }]
       },
@@ -535,20 +535,20 @@ export function apply(ctx, config) {
         additionalProperties: false,
         properties: {
           outputPath: { type: 'string', required: true },
-          revisadas: { type: 'integer', required: true },
-          yaEstaban: { type: 'integer', required: true },
-          sinRevisar: { type: 'integer', required: true },
-          sinFicha: { type: 'array', required: true, items: { type: 'string' } },
+          newlyReviewed: { type: 'integer', required: true },
+          alreadyReviewed: { type: 'integer', required: true },
+          unreviewed: { type: 'integer', required: true },
+          withoutDraft: { type: 'array', required: true, items: { type: 'string' } },
         },
       },
       render: (_args, value) => {
         const partes = [
-          `${value.revisadas} fichas marcadas como revisadas.`
-          + `${value.yaEstaban > 0 ? ` ${value.yaEstaban} ya lo estaban.` : ''}`,
-          `Quedan ${value.sinRevisar} sin revisar.`,
+          `${value.newlyReviewed} fichas marcadas como revisadas.`
+          + `${value.alreadyReviewed > 0 ? ` ${value.alreadyReviewed} ya lo estaban.` : ''}`,
+          `Quedan ${value.unreviewed} sin revisar.`,
         ]
-        if (value.sinFicha.length > 0) {
-          partes.push(`Estos SKU no tienen ficha que revisar: ${value.sinFicha.join(', ')}`)
+        if (value.withoutDraft.length > 0) {
+          partes.push(`Estos SKU no tienen ficha que revisar: ${value.withoutDraft.join(', ')}`)
         }
         return [{ type: 'text', text: partes.join(' ') }]
       },

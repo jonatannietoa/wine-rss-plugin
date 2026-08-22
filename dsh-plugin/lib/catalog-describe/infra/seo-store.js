@@ -14,8 +14,8 @@ import { resolveFromConfig } from '../../config.js'
 
 /** Resuelve la ruta del almacén SEO declarada en la configuración. */
 export
-const rutaSeo = (dominio) =>
-  resolveFromConfig(dominio, dominio.output?.seoJson ?? './.artifacts/catalog-seo.json')
+const draftsPath = (domainConfig) =>
+  resolveFromConfig(domainConfig, domainConfig.output?.seoJson ?? './.artifacts/catalog-seo.json')
 
 /**
  * Lee el almacén de textos SEO. No existir es lo normal la primera vez.
@@ -23,15 +23,15 @@ const rutaSeo = (dominio) =>
  * @returns las fichas indexadas por SKU.
  */
 export
-function cargarSeo(path) {
+function loadDrafts(path) {
   if (!existsSync(path)) return {}
-  let datos
+  let data
   try {
-    datos = JSON.parse(readFileSync(path, 'utf8'))
+    data = JSON.parse(readFileSync(path, 'utf8'))
   } catch (error) {
     throw new Error(`no se pudo leer ${path}: ${error.message}`)
   }
-  return datos?.items && typeof datos.items === 'object' ? datos.items : {}
+  return data?.items && typeof data.items === 'object' ? data.items : {}
 }
 
 /**
@@ -40,7 +40,7 @@ function cargarSeo(path) {
  * @param items - las fichas indexadas por SKU.
  */
 export
-function guardarSeo(path, items) {
+function saveDrafts(path, items) {
   mkdirSync(dirname(path), { recursive: true })
   const contenido = { generatedAt: new Date().toISOString(), items }
   writeFileSync(path, `${JSON.stringify(contenido, null, 2)}\n`, 'utf8')

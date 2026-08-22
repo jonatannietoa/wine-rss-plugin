@@ -40,17 +40,17 @@ export function stripTags(html) {
  * @param maxChars - longitud máxima; se corta por guión para no partir palabras.
  * @returns el slug.
  */
-export function slugify(texto, maxChars = 70) {
-  const slug = String(texto ?? '')
+export function slugify(text, maxChars = 70) {
+  const slug = String(text ?? '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
   if (slug.length <= maxChars) return slug
-  const cortado = slug.slice(0, maxChars)
-  const ultimo = cortado.lastIndexOf('-')
-  return (ultimo > 0 ? cortado.slice(0, ultimo) : cortado).replace(/-+$/, '')
+  const skipped = slug.slice(0, maxChars)
+  const ultimo = skipped.lastIndexOf('-')
+  return (ultimo > 0 ? skipped.slice(0, ultimo) : skipped).replace(/-+$/, '')
 }
 
 /**
@@ -66,7 +66,7 @@ export function slugify(texto, maxChars = 70) {
  */
 export function keywords(product, config) {
   const campos = config.description?.keywordsFrom ?? ['productType', 'origin']
-  return [...new Set(campos.map((campo) => legible(product, campo, config)).filter(Boolean))]
+  return [...new Set(campos.map((campo) => readable(product, campo, config)).filter(Boolean))]
 }
 
 /**
@@ -80,7 +80,7 @@ export function keywords(product, config) {
  * @returns el valor legible, o `null` si el producto no lo trae.
  */
 export
-function legible(product, campo, config) {
+function readable(product, campo, config) {
   const bruto = product[campo]
   if (bruto === null || bruto === undefined || bruto === '') return null
   if (campo === 'productionType') return config.taxonomy?.productionTypes?.[bruto] ?? bruto
@@ -88,50 +88,50 @@ function legible(product, campo, config) {
 }
 
 /** Cuenta cuántas veces aparece `aguja` en `pajar`, sin distinguir mayúsculas. */
-function veces(pajar, aguja) {
-  if (!aguja) return 0
-  const escapada = aguja.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return (pajar.match(new RegExp(escapada, 'gi')) ?? []).length
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0
+  const escapada = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return (haystack.match(new RegExp(escapada, 'gi')) ?? []).length
 }
 
 /** Comprueba la estructura escaneable del cuerpo: un párrafo y luego bullets. */
-function validarCuerpo(bodyHtml, config, anota) {
+function validateBody(bodyHtml, config, flag) {
   const cfg = config.description?.bodyHtml ?? {}
   const bullets = cfg.bullets ?? { min: 3, max: 5, maxChars: 90 }
-  const permitidas = cfg.allowTags ?? ['p', 'ul', 'li', 'strong', 'em']
+  const allowedTags = cfg.allowTags ?? ['p', 'ul', 'li', 'strong', 'em']
 
   for (const etiqueta of bodyHtml.matchAll(/<\/?([a-z0-9]+)[^>]*>/gi)) {
-    const nombre = etiqueta[1].toLowerCase()
-    if (!permitidas.includes(nombre)) {
-      anota('etiquetaProhibida', `bodyHtml usa la etiqueta <${nombre}>, que no está permitida (solo ${permitidas.join(', ')})`)
+    const entryName = etiqueta[1].toLowerCase()
+    if (!allowedTags.includes(entryName)) {
+      flag('etiquetaProhibida', `bodyHtml usa la etiqueta <${entryName}>, que no está permitida (solo ${allowedTags.join(', ')})`)
       break
     }
   }
 
-  const entrada = bodyHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
-  if (!entrada) {
-    anota('sinEntrada', 'bodyHtml no trae el <p> de entrada')
+  const lead = bodyHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
+  if (!lead) {
+    flag('sinEntrada', 'bodyHtml no trae el <p> de entrada')
   } else {
-    const palabras = stripTags(entrada[1]).split(/\s+/).filter(Boolean)
-    const maximo = cfg.leadMaxWords ?? 40
-    if (palabras.length > maximo) {
-      anota('entradaLarga', `el <p> de entrada tiene ${palabras.length} palabras y el máximo es ${maximo}`)
+    const words = stripTags(lead[1]).split(/\s+/).filter(Boolean)
+    const maxAllowed = cfg.leadMaxWords ?? 40
+    if (words.length > maxAllowed) {
+      flag('entradaLarga', `el <p> de entrada tiene ${words.length} palabras y el máximo es ${maxAllowed}`)
     }
   }
 
-  const lista = bodyHtml.match(/<ul[^>]*>([\s\S]*?)<\/ul>/i)
-  if (!lista) {
-    anota('sinBullets', 'bodyHtml no trae el <ul> con los bullets, y la ficha tiene que poder escanearse en móvil')
+  const list = bodyHtml.match(/<ul[^>]*>([\s\S]*?)<\/ul>/i)
+  if (!list) {
+    flag('sinBullets', 'bodyHtml no trae el <ul> con los bullets, y la ficha tiene que poder escanearse en móvil')
     return
   }
-  const puntos = [...lista[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)].map((m) => stripTags(m[1]))
-  if (puntos.length < bullets.min || puntos.length > bullets.max) {
-    anota('bulletsFuera', `hay ${puntos.length} bullets y tienen que ser entre ${bullets.min} y ${bullets.max}`)
+  const bulletTexts = [...list[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)].map((m) => stripTags(m[1]))
+  if (bulletTexts.length < bullets.min || bulletTexts.length > bullets.max) {
+    flag('bulletsFuera', `hay ${bulletTexts.length} bullets y tienen que ser entre ${bullets.min} y ${bullets.max}`)
   }
-  for (const punto of puntos) {
-    if (!punto) anota('bulletVacio', 'hay un bullet vacío')
-    else if (punto.length > bullets.maxChars) {
-      anota('bulletLargo', `un bullet tiene ${punto.length} caracteres y el máximo es ${bullets.maxChars}: "${punto.slice(0, 40)}…"`)
+  for (const bullet of bulletTexts) {
+    if (!bullet) flag('bulletVacio', 'hay un bullet vacío')
+    else if (bullet.length > bullets.maxChars) {
+      flag('bulletLargo', `un bullet tiene ${bullet.length} caracteres y el máximo es ${bullets.maxChars}: "${bullet.slice(0, 40)}…"`)
     }
   }
 }
@@ -153,77 +153,77 @@ function validarCuerpo(bodyHtml, config, anota) {
  *   duplicados entre productos.
  * @returns los problemas encontrados, en español.
  */
-export function validateDraft(draft, product, config, usados = {}) {
+export function validateDraft(draft, product, config, used = {}) {
   const d = config.description ?? {}
-  const problemas = []
-  const handles = usados.handles ?? new Set()
-  const textos = usados.textos ?? new Set()
-  const anota = (code, message) => problemas.push({ code, message })
+  const problems = []
+  const handles = used.handles ?? new Set()
+  const texts = used.texts ?? new Set()
+  const flag = (code, message) => problems.push({ code, message })
 
   for (const campo of SEO_FIELDS) {
-    if (!draft[campo]) anota('faltaCampo', `falta ${campo}`)
+    if (!draft[campo]) flag('faltaCampo', `falta ${campo}`)
   }
-  if (problemas.length > 0) return problemas
+  if (problems.length > 0) return problems
 
   for (const campo of SEO_FIELDS) {
-    const maximo = d[campo]?.maxChars
-    if (maximo && draft[campo].length > maximo) {
-      anota(`largo:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el máximo es ${maximo}`)
+    const maxAllowed = d[campo]?.maxChars
+    if (maxAllowed && draft[campo].length > maxAllowed) {
+      flag(`largo:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el máximo es ${maxAllowed}`)
     }
-    const minimo = d[campo]?.minChars
-    if (minimo && draft[campo].length < minimo) {
-      anota(`corto:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el mínimo es ${minimo}`)
+    const minAllowed = d[campo]?.minChars
+    if (minAllowed && draft[campo].length < minAllowed) {
+      flag(`corto:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el mínimo es ${minAllowed}`)
     }
   }
 
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(draft.handle)) {
-    anota('handleInvalido', `handle "${draft.handle}" no vale: solo minúsculas, números y guiones simples`)
+    flag('handleInvalido', `handle "${draft.handle}" no vale: solo minúsculas, números y guiones simples`)
   } else if (handles.has(draft.handle)) {
-    anota('handleDuplicado', `handle "${draft.handle}" ya lo tiene otro producto, y la URL tiene que ser única`)
+    flag('handleDuplicado', `handle "${draft.handle}" ya lo tiene otro producto, y la URL tiene que ser única`)
   }
 
-  validarCuerpo(draft.bodyHtml, config, anota)
+  validateBody(draft.bodyHtml, config, flag)
 
   // La primera frase tiene que decir qué es el producto. Vale el tipo, su palabra
   // principal o la categoría: hay grupos del ERP que se traducen a cubos
   // genéricos (`Otros`, `Estuche`) y exigir esa palabra fuerza una frase que
   // nadie escribiría —«es un otros»—, así que para esos el que tiene sentido es
   // el de la categoría («vino»).
-  const entrada = draft.bodyHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
-  if (entrada && product.productType) {
-    const texto = stripTags(entrada[1]).toLowerCase()
+  const lead = draft.bodyHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
+  if (lead && product.productType) {
+    const text = stripTags(lead[1]).toLowerCase()
     const tipo = product.productType.toLowerCase()
-    const acepta = [tipo, tipo.split(/\s+/)[0], product.category?.toLowerCase()].filter(Boolean)
-    if (!acepta.some((palabra) => texto.includes(palabra))) {
-      anota(
+    const accepted = [tipo, tipo.split(/\s+/)[0], product.category?.toLowerCase()].filter(Boolean)
+    if (!accepted.some((word) => text.includes(word))) {
+      flag(
         'entradaSinTipo',
         'la primera frase no dice qué es el producto: tiene que nombrar '
-        + acepta.map((palabra) => `"${palabra}"`).join(' o '),
+        + accepted.map((word) => `"${word}"`).join(' o '),
       )
     }
   }
 
   // Nada de plantillas: dos productos no pueden compartir el mismo texto.
   for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-    if (textos.has(`${campo}:${draft[campo]}`)) {
-      anota('textoDuplicado', `${campo} es idéntico al de otro producto; cada ficha tiene que ser distinta`)
+    if (texts.has(`${campo}:${draft[campo]}`)) {
+      flag('textoDuplicado', `${campo} es idéntico al de otro producto; cada ficha tiene que ser distinta`)
     }
   }
 
   const todo = SEO_FIELDS.map((campo) => draft[campo]).join('\n')
-  for (const frase of d.forbidPhrases ?? []) {
-    if (todo.toLowerCase().includes(String(frase).toLowerCase())) {
-      anota('promocional', `sobra el lenguaje promocional "${frase}": no va en la ficha ni en el feed`)
+  for (const phrase of d.forbidPhrases ?? []) {
+    if (todo.toLowerCase().includes(String(phrase).toLowerCase())) {
+      flag('promocional', `sobra el lenguaje promocional "${phrase}": no va en la ficha ni en el feed`)
     }
   }
 
   // Lo que el fichero no dice, no se escribe. Si el dato SÍ está en el nombre
   // del producto, no es invención y se deja pasar.
-  const propio = `${product.titleRaw ?? ''} ${product.title ?? ''}`.toLowerCase()
-  for (const patron of d.forbidPatterns ?? []) {
-    for (const encaje of todo.matchAll(new RegExp(patron, 'gi'))) {
-      if (!propio.includes(encaje[0].toLowerCase())) {
-        anota('inventado', `"${encaje[0]}" no está en los datos del producto: no te lo puedes inventar`)
+  const ownData = `${product.titleRaw ?? ''} ${product.title ?? ''}`.toLowerCase()
+  for (const pattern of d.forbidPatterns ?? []) {
+    for (const match of todo.matchAll(new RegExp(pattern, 'gi'))) {
+      if (!ownData.includes(match[0].toLowerCase())) {
+        flag('inventado', `"${match[0]}" no está en los datos del producto: no te lo puedes inventar`)
         break
       }
     }
@@ -231,12 +231,12 @@ export function validateDraft(draft, product, config, usados = {}) {
 
   const cuerpo = stripTags(draft.bodyHtml)
   const maxRepeticiones = d.maxKeywordRepeats ?? 3
-  for (const clave of keywords(product, config)) {
-    const cuenta = veces(cuerpo, clave)
-    if (cuenta > maxRepeticiones) {
-      anota('stuffing', `"${clave}" aparece ${cuenta} veces en el cuerpo y el máximo son ${maxRepeticiones} (keyword stuffing)`)
+  for (const key of keywords(product, config)) {
+    const counts = countOccurrences(cuerpo, key)
+    if (counts > maxRepeticiones) {
+      flag('stuffing', `"${key}" aparece ${counts} veces en el cuerpo y el máximo son ${maxRepeticiones} (keyword stuffing)`)
     }
   }
 
-  return problemas
+  return problems
 }

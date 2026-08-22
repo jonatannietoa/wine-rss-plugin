@@ -31,9 +31,9 @@ export function configTemporal(mutar = () => {}) {
   crudo.source.path = FIXTURE
   crudo.output = { catalogJson: './catalog.json', seoJson: './catalog-seo.json' }
   mutar(crudo)
-  const ruta = join(temporal(), 'catalog.config.yml')
-  writeFileSync(ruta, dump(crudo), 'utf8')
-  return ruta
+  const path = join(temporal(), 'catalog.config.yml')
+  writeFileSync(path, dump(crudo), 'utf8')
+  return path
 }
 
 /**
@@ -73,15 +73,15 @@ export async function conCatalogoCargado(llm = {}, mutar = () => {}) {
  * @returns `{ llm, llamadas }`, donde `llamadas` acumula los prompts recibidos.
  */
 export function llmSimulado(respuestas) {
-  const llamadas = []
-  const pendientes = [...respuestas]
+  const calls = []
+  const pending = [...respuestas]
   return {
-    llamadas,
+    calls,
     llm: {
       async *stream(opciones) {
-        llamadas.push(opciones)
-        const texto = pendientes.shift() ?? ''
-        yield { type: 'text-delta', index: 0, text: texto }
+        calls.push(opciones)
+        const text = pending.shift() ?? ''
+        yield { type: 'text-delta', index: 0, text: text }
         yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 200 } }
       },
     },
@@ -89,7 +89,7 @@ export function llmSimulado(respuestas) {
 }
 
 /** El `exec` que recibe un tool, con el modelo de la sesión y su señal. */
-export const ejecucion = (modelo = { provider: 'deepseek', model: 'deepseek-chat' }) => ({
-  agent: { options: modelo },
+export const ejecucion = (model = { provider: 'deepseek', model: 'deepseek-chat' }) => ({
+  agent: { options: model },
   signal: AbortSignal.timeout(30000),
 })

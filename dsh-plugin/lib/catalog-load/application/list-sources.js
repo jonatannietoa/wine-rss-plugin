@@ -16,7 +16,7 @@ import { listSources } from '../infra/csv-source.js'
  * @param dominio - la configuración cargada.
  * @returns las bandejas, los ficheros que hay en ellas y el habitual.
  */
-export function listCatalogSources(dominio) {
-  const { dirs, files } = listSources(dominio)
-  return { dirs, files, habitual: resolveFromConfig(dominio, dominio.source.path) }
+export function listCatalogSources(domainConfig) {
+  const { dirs, files } = listSources(domainConfig)
+  return { dirs, files, defaultSource: resolveFromConfig(domainConfig, domainConfig.source.path) }
 }

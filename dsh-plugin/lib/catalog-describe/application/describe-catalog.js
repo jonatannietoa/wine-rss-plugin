@@ -11,20 +11,20 @@
  * @module dsh-plugin-catalog-agent/catalog-describe/application/describe-catalog
  */
 
-import { FIELD_ROLES, SEO_FIELDS, keywords, legible, validateDraft } from '../domain/seo-draft.js'
-import { parseBlocks, pedirFicha } from '../infra/llm-adapter.js'
-import { cargarCatalogo } from '../infra/catalog-reader.js'
-import { cargarSeo, guardarSeo, rutaSeo } from '../infra/seo-store.js'
+import { FIELD_ROLES, SEO_FIELDS, keywords, readable, validateDraft } from '../domain/seo-draft.js'
+import { parseBlocks, requestDraft } from '../infra/llm-adapter.js'
+import { readCatalog } from '../infra/catalog-reader.js'
+import { loadDrafts, saveDrafts, draftsPath } from '../infra/seo-store.js'
 
 /** Los datos del producto que el modelo puede ver, y ninguno más. */
-function datosVisibles(product, config) {
+function visibleFields(product, config) {
   const campos = config.description?.fields ?? ['title', 'productType']
-  const datos = {}
+  const data = {}
   for (const campo of campos) {
-    const valor = legible(product, campo, config)
-    if (valor !== null) datos[campo] = valor
+    const value = readable(product, campo, config)
+    if (value !== null) data[campo] = value
   }
-  return datos
+  return data
 }
 
 /**
@@ -38,10 +38,10 @@ function datosVisibles(product, config) {
  * @param problemas - lo que hay que corregir de un intento anterior.
  * @returns `{ system, user }`, los dos textos de la llamada.
  */
-export function buildPrompt(product, config, problemas = []) {
+export function buildPrompt(product, config, problems = []) {
   const d = config.description ?? {}
   const bullets = d.bodyHtml?.bullets ?? { min: 3, max: 5, maxChars: 90 }
-  const claves = keywords(product, config)
+  const keywordList = keywords(product, config)
 
   const system = [
     `Escribes fichas de producto para una tienda online, en ${d.language ?? 'es'}.`,
@@ -93,20 +93,20 @@ export function buildPrompt(product, config, problemas = []) {
 
   const partes = [
     'Datos del producto (es TODO lo que se sabe de él):',
-    JSON.stringify(datosVisibles(product, config), null, 2),
+    JSON.stringify(visibleFields(product, config), null, 2),
   ]
-  if (claves.length > 0) {
+  if (keywordList.length > 0) {
     partes.push(
       '',
-      `Keywords que describen este producto: ${claves.join(', ')}.`,
+      `Keywords que describen este producto: ${keywordList.join(', ')}.`,
       'Úsalas donde encajen de forma natural. Si alguna no encaja en una frase, no la metas.',
     )
   }
-  if (problemas.length > 0) {
+  if (problems.length > 0) {
     partes.push(
       '',
       'Tu respuesta anterior no vale. Corrige exactamente esto y devuelve el JSON completo otra vez:',
-      ...problemas.map((problema) => `- ${problema}`),
+      ...problems.map((issue) => `- ${issue}`),
     )
   }
 
@@ -120,17 +120,17 @@ export function buildPrompt(product, config, problemas = []) {
  * @param excluir - SKUs que se están regenerando y por tanto no cuentan.
  * @returns `{ handles, textos }`.
  */
-function yaUsados(items, excluir = new Set()) {
+function alreadyUsed(items, excluir = new Set()) {
   const handles = new Set()
-  const textos = new Set()
-  for (const [sku, ficha] of Object.entries(items)) {
+  const texts = new Set()
+  for (const [sku, draft] of Object.entries(items)) {
     if (excluir.has(sku)) continue
-    if (ficha.handle) handles.add(ficha.handle)
+    if (draft.handle) handles.add(draft.handle)
     for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-      if (ficha[campo]) textos.add(`${campo}:${ficha[campo]}`)
+      if (draft[campo]) texts.add(`${campo}:${draft[campo]}`)
     }
   }
-  return { handles, textos }
+  return { handles, texts }
 }
 
 /**
@@ -153,29 +153,29 @@ function yaUsados(items, excluir = new Set()) {
  * @returns `{ draft }` si pasó, o `{ problemas }` con lo que falló en el último
  *   intento; y en los dos casos `rechazos`, los códigos de lo que se rechazó.
  */
-async function redactar(ctx, modelo, product, dominio, usados, signal, problemasIniciales = [], esfuerzo = undefined, plugin = 'catalog-agent') {
-  const d = dominio.description ?? {}
+async function writeDraft(ctx, model, product, domainConfig, used, signal, initialProblems = [], effort = undefined, plugin = 'catalog-agent') {
+  const d = domainConfig.description ?? {}
   const maxIntentos = d.maxAttempts ?? 3
-  let problemas = problemasIniciales
+  let problems = initialProblems
   let diagnostico = null
   // Los códigos de todo lo que se rechazó por el camino, aunque al final salga
   // bien: es lo único que dice qué regla está costando llamadas.
-  const rechazos = []
-  const milisegundos = []
+  const rejections = []
+  const durations = []
   // El pico de razonamiento del lote: es lo que dice si `maxTokens` va holgado o
   // al filo, y hasta ahora solo se veía en los fallos definitivos.
-  let razonamientoMaximo = 0
+  let peakReasoningChars = 0
   // Si ni un intento produjo un bloque aprovechable, el fallo no es de este
   // producto: es del modelo o del prompt, y seguir con el lote es tirar llamadas.
   let algunBloque = false
 
-  for (let intento = 1; intento <= maxIntentos; intento += 1) {
-    const { system, user } = buildPrompt(product, dominio, problemas.map((x) => x.message))
-    const { texto, razonamiento, milisegundos: tardo, cruda } = await pedirFicha(ctx, {
-      modelo,
+  for (let attempt = 1; attempt <= maxIntentos; attempt += 1) {
+    const { system, user } = buildPrompt(product, domainConfig, problems.map((x) => x.message))
+    const { text, reasoning, durations: tardo, raw } = await requestDraft(ctx, {
+      model,
       system,
       user,
-      reasoningEffort: esfuerzo ?? d.reasoningEffort ?? 'high',
+      reasoningEffort: effort ?? d.reasoningEffort ?? 'high',
       // Holgado a propósito: el razonamiento consume de este mismo presupuesto,
       // y un tope justo para el texto deja la respuesta vacía.
       maxTokens: d.maxTokens ?? 16000,
@@ -183,55 +183,55 @@ async function redactar(ctx, modelo, product, dominio, usados, signal, problemas
       plugin,
       signal,
     })
-    milisegundos.push(tardo)
-    razonamientoMaximo = Math.max(razonamientoMaximo, razonamiento)
+    durations.push(tardo)
+    peakReasoningChars = Math.max(peakReasoningChars, reasoning)
     diagnostico = {
-      caracteresTexto: texto.length,
-      caracteresRazonamiento: razonamiento,
-      respuestaCruda: cruda,
+      textChars: text.length,
+      reasoningChars: reasoning,
+      rawResponse: raw,
     }
 
     let draft
     try {
-      draft = parseBlocks(texto)
+      draft = parseBlocks(text)
     } catch (error) {
-      problemas = [{ code: 'sinBloques', message: error.message }]
+      problems = [{ code: 'sinBloques', message: error.message }]
       // El síntoma que costó ocho borradores en blanco: todo el presupuesto en
       // razonamiento y nada escrito. Decirlo con nombre ahorra el diagnóstico.
-      if (texto.length === 0 && razonamiento > 0) {
-        problemas.push({
+      if (text.length === 0 && reasoning > 0) {
+        problems.push({
           code: 'sinTexto',
-          message: `el modelo gastó ${razonamiento} caracteres razonando y no escribió nada: `
+          message: `el modelo gastó ${reasoning} caracteres razonando y no escribió nada: `
             + 'sube `description.maxTokens` o baja `description.reasoningEffort`',
         })
       } else {
-        problemas.push({ code: 'ayuda', message: 'Empieza directamente por "### seoTitle", sin texto alrededor.' })
+        problems.push({ code: 'ayuda', message: 'Empieza directamente por "### seoTitle", sin texto alrededor.' })
       }
-      rechazos.push(...problemas.map((x) => x.code))
+      rejections.push(...problems.map((x) => x.code))
       continue
     }
     algunBloque = true
 
-    problemas = validateDraft(draft, product, dominio, usados)
-    rechazos.push(...problemas.map((x) => x.code))
-    if (problemas.length === 0) {
+    problems = validateDraft(draft, product, domainConfig, used)
+    rejections.push(...problems.map((x) => x.code))
+    if (problems.length === 0) {
       return {
         draft: {
           sku: product.sku,
           ...Object.fromEntries(SEO_FIELDS.map((campo) => [campo, draft[campo]])),
           reviewed: false,
           generatedAt: new Date().toISOString(),
-          model: `${modelo.provider}/${modelo.model}`,
-          attempts: intento,
+          model: `${model.provider}/${model.model}`,
+          attempts: attempt,
         },
-        rechazos,
-        milisegundos,
-        razonamientoMaximo,
+        rejections,
+        durations,
+        peakReasoningChars,
       }
     }
   }
 
-  return { problemas, diagnostico, rechazos, milisegundos, razonamientoMaximo, sistemico: !algunBloque }
+  return { problems, diagnostico, rejections, durations, peakReasoningChars, sistemico: !algunBloque }
 }
 
 /**
@@ -239,10 +239,10 @@ async function redactar(ctx, modelo, product, dominio, usados, signal, problemas
  * @param draft - la ficha aceptada.
  * @param usados - los conjuntos compartidos.
  */
-function reservar(draft, usados) {
-  usados.handles.add(draft.handle)
+function reserve(draft, used) {
+  used.handles.add(draft.handle)
   for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-    usados.textos.add(`${campo}:${draft[campo]}`)
+    used.texts.add(`${campo}:${draft[campo]}`)
   }
 }
 
@@ -256,23 +256,23 @@ function reservar(draft, usados) {
  * @param usados - los conjuntos, ya con las fichas aceptadas antes que esta.
  * @returns los problemas de unicidad, o lista vacía.
  */
-function choca(draft, usados) {
-  const problemas = []
-  if (usados.handles.has(draft.handle)) {
-    problemas.push({
+function collidesWith(draft, used) {
+  const problems = []
+  if (used.handles.has(draft.handle)) {
+    problems.push({
       code: 'handleDuplicado',
       message: `handle "${draft.handle}" ya lo tiene otro producto de este mismo lote, y la URL tiene que ser única`,
     })
   }
   for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-    if (usados.textos.has(`${campo}:${draft[campo]}`)) {
-      problemas.push({
+    if (used.texts.has(`${campo}:${draft[campo]}`)) {
+      problems.push({
         code: 'textoDuplicado',
         message: `${campo} es idéntico al de otro producto de este mismo lote; cada ficha tiene que ser distinta`,
       })
     }
   }
-  return problemas
+  return problems
 }
 
 /**
@@ -284,75 +284,75 @@ function choca(draft, usados) {
  * @param plugin - el nombre del plugin, para el origen de los mensajes.
  * @returns el resumen del lote.
  */
-export async function describeCatalog(ctx, dominio, args, exec, plugin) {
+export async function describeCatalog(ctx, domainConfig, args, exec, plugin) {
   // El catálogo sale del JSON que dejó `catalog_load`, no de releer el fichero
   // configurado: si el usuario cargó otro, es ese el que hay que describir.
-  const catalog = cargarCatalogo(dominio)
+  const catalog = readCatalog(domainConfig)
   const porSku = new Map(catalog.items.map((item) => [item.sku, item]))
-  const salida = rutaSeo(dominio)
-  const fichas = cargarSeo(salida)
+  const storePath = draftsPath(domainConfig)
+  const drafts = loadDrafts(storePath)
 
-  const politica = args.regenerate ?? dominio.description?.regenerate ?? 'missing'
+  const politica = args.regenerate ?? domainConfig.description?.regenerate ?? 'missing'
   if (politica === 'never') {
     throw new Error('la configuración dice `description.regenerate: never`: no se escribe ninguna ficha')
   }
-  const pendientes = catalog.items.filter((item) => politica === 'always' || !fichas[item.sku])
+  const pending = catalog.items.filter((item) => politica === 'always' || !drafts[item.sku])
 
-  let objetivo
-  const pedidos = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
-  if (pedidos.length > 0) {
-    const desconocidos = pedidos.filter((sku) => !porSku.has(sku))
+  let targets
+  const requestedSkus = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
+  if (requestedSkus.length > 0) {
+    const desconocidos = requestedSkus.filter((sku) => !porSku.has(sku))
     if (desconocidos.length > 0) {
       throw new Error(`estos SKU no están en el catálogo: ${desconocidos.join(', ')}`)
     }
-    objetivo = pedidos.map((sku) => porSku.get(sku))
+    targets = requestedSkus.map((sku) => porSku.get(sku))
   } else if (args.limit) {
     if (args.limit < 1) throw new Error(`limit tiene que ser 1 o más (recibido ${args.limit})`)
-    objetivo = pendientes.slice(0, args.limit)
+    targets = pending.slice(0, args.limit)
   } else {
     throw new Error(
-      `hay ${pendientes.length} productos sin ficha de ${catalog.items.length} del catálogo, y cada uno es `
+      `hay ${pending.length} productos sin ficha de ${catalog.items.length} del catálogo, y cada uno es `
       + 'una llamada al modelo. Acota el lote: `limit` para procesar los N primeros pendientes, o `sku`/`skus` '
       + 'para productos concretos.',
     )
   }
 
-  const techo = dominio.description?.maxPerCall ?? 50
-  if (objetivo.length > techo) {
+  const techo = domainConfig.description?.maxPerCall ?? 50
+  if (targets.length > techo) {
     throw new Error(
-      `has pedido ${objetivo.length} productos y el techo por llamada es ${techo} `
+      `has pedido ${targets.length} productos y el techo por llamada es ${techo} `
       + '(`description.maxPerCall`). Ve por lotes.',
     )
   }
-  if (objetivo.length === 0) {
+  if (targets.length === 0) {
     throw new Error('no hay ningún producto pendiente: todos tienen ficha ya. Usa `regenerate: always` para rescribir.')
   }
 
-  const usados = yaUsados(fichas, new Set(objetivo.map((item) => item.sku)))
+  const used = alreadyUsed(drafts, new Set(targets.map((item) => item.sku)))
 
   if (args.dryRun) {
     return {
-      outputPath: salida,
+      outputPath: storePath,
       sourcePath: catalog.source?.path ?? '(desconocido)',
-      modelo: '(prueba en seco: no se ha llamado a ninguno)',
-      solicitados: objetivo.length,
-      generados: 0,
-      fallidos: 0,
-      cortado: 0,
-      llamadas: 0,
-      segundos: 0,
-      razonamientoMaximo: 0,
-      segundosPorLlamada: 0,
-      esfuerzo: args.reasoningEffort?.trim() || dominio.description?.reasoningEffort || 'high',
-      maxTokensConfigurado: dominio.description?.maxTokens ?? 16000,
-      sonda: false,
-      intentosMedios: 0,
-      rechazos: [],
-      pendientes: pendientes.length,
-      sinRevisar: Object.values(fichas).filter((f) => !f.reviewed).length,
-      fallos: [],
-      muestra: [],
-      prompt: buildPrompt(objetivo[0], dominio),
+      model: '(prueba en seco: no se ha llamado a ninguno)',
+      requested: targets.length,
+      written: 0,
+      failed: 0,
+      skipped: 0,
+      calls: 0,
+      seconds: 0,
+      peakReasoningChars: 0,
+      secondsPerCall: 0,
+      effort: args.reasoningEffort?.trim() || domainConfig.description?.reasoningEffort || 'high',
+      maxTokens: domainConfig.description?.maxTokens ?? 16000,
+      probed: false,
+      averageAttempts: 0,
+      rejections: [],
+      pending: pending.length,
+      unreviewed: Object.values(drafts).filter((f) => !f.reviewed).length,
+      failures: [],
+      sample: [],
+      prompt: buildPrompt(targets[0], domainConfig),
     }
   }
 
@@ -360,146 +360,146 @@ export async function describeCatalog(ctx, dominio, args, exec, plugin) {
   // fijar otro: charlar con uno rápido y escribir las fichas con uno que
   // siga mejor las restricciones de formato es una combinación razonable.
   const opciones = exec.agent?.options
-  const modelo = {
-    provider: dominio.description?.provider ?? opciones?.provider,
-    model: dominio.description?.model ?? opciones?.model,
+  const model = {
+    provider: domainConfig.description?.provider ?? opciones?.provider,
+    model: domainConfig.description?.model ?? opciones?.model,
   }
-  if (!modelo.provider || !modelo.model) {
+  if (!model.provider || !model.model) {
     throw new Error(
       'no se ha podido averiguar el modelo de esta sesión, así que no hay con qué redactar. '
       + 'Fija `description.provider` y `description.model` en la configuración, o revisa el host.',
     )
   }
 
-  const generadas = []
-  const fallos = []
-  const rechazos = []
-  let cortado = 0
-  let llamadas = 0
+  const written = []
+  const failures = []
+  const rejections = []
+  let skipped = 0
+  let calls = 0
 
-  const tiempos = []
-  let picoRazonamiento = 0
+  const durations = []
+  let peakReasoning = 0
 
   /** Acepta o registra el resultado de un producto. */
-  const asentar = (product, resultado) => {
-    rechazos.push(...(resultado.rechazos ?? []))
-    tiempos.push(...(resultado.milisegundos ?? []))
-    picoRazonamiento = Math.max(picoRazonamiento, resultado.razonamientoMaximo ?? 0)
-    llamadas += resultado.draft?.attempts ?? (dominio.description?.maxAttempts ?? 3)
-    if (resultado.draft) {
-      fichas[product.sku] = resultado.draft
-      generadas.push(resultado.draft)
-      reservar(resultado.draft, usados)
+  const settle = (product, result) => {
+    rejections.push(...(result.rejections ?? []))
+    durations.push(...(result.durations ?? []))
+    peakReasoning = Math.max(peakReasoning, result.peakReasoningChars ?? 0)
+    calls += result.draft?.attempts ?? (domainConfig.description?.maxAttempts ?? 3)
+    if (result.draft) {
+      drafts[product.sku] = result.draft
+      written.push(result.draft)
+      reserve(result.draft, used)
       return
     }
-    fallos.push({
+    failures.push({
       sku: product.sku,
-      problemas: resultado.problemas.map((x) => x.message),
-      caracteresTexto: resultado.diagnostico?.caracteresTexto ?? 0,
-      caracteresRazonamiento: resultado.diagnostico?.caracteresRazonamiento ?? 0,
-      respuestaCruda: resultado.diagnostico?.respuestaCruda ?? '',
+      problems: result.problems.map((x) => x.message),
+      textChars: result.diagnostico?.textChars ?? 0,
+      reasoningChars: result.diagnostico?.reasoningChars ?? 0,
+      rawResponse: result.diagnostico?.rawResponse ?? '',
     })
   }
 
-  const arranqueLote = Date.now()
-  const concurrencia = Math.max(1, dominio.description?.concurrency ?? 4)
+  const batchStart = Date.now()
+  const concurrency = Math.max(1, domainConfig.description?.concurrency ?? 4)
 
   // La sonda: el primer producto solo, para que un modelo mal configurado
   // cueste tres llamadas y no un lote entero. Pero es una ola secuencial
   // completa —un 33 % del tiempo de pared en un lote de cuatro—, así que con
   // `auto` se salta cuando ya hay una ficha escrita por ESTE mismo modelo:
   // eso es prueba de que la configuración funciona.
-  const politicaSonda = dominio.description?.probeFirst ?? 'auto'
-  const yaFuncionó = Object.values(fichas).some(
-    (ficha) => ficha.model === `${modelo.provider}/${modelo.model}`,
+  const probePolicy = domainConfig.description?.probeFirst ?? 'auto'
+  const alreadyWorked = Object.values(drafts).some(
+    (draft) => draft.model === `${model.provider}/${model.model}`,
   )
-  const sondear = politicaSonda === 'always'
-    || (politicaSonda !== 'never' && !yaFuncionó)
+  const probe = probePolicy === 'always'
+    || (probePolicy !== 'never' && !alreadyWorked)
 
-  const esfuerzo = args.reasoningEffort?.trim() || undefined
+  const effort = args.reasoningEffort?.trim() || undefined
 
-  let resto = objetivo
-  if (sondear) {
-    const [cabeza, ...cola] = objetivo
-    resto = cola
+  let rest = targets
+  if (probe) {
+    const [first, ...cola] = targets
+    rest = cola
     exec.signal.throwIfAborted()
-    const primero = await redactar(ctx, modelo, cabeza, dominio, usados, exec.signal, [], esfuerzo, plugin)
-    asentar(cabeza, primero)
-    if (primero.sistemico) resto = []
-    cortado = primero.sistemico ? cola.length : 0
+    const firstResult = await writeDraft(ctx, model, first, domainConfig, used, exec.signal, [], effort, plugin)
+    settle(first, firstResult)
+    if (firstResult.sistemico) rest = []
+    skipped = firstResult.sistemico ? cola.length : 0
   }
 
-  if (cortado === 0) {
-    for (let inicio = 0; inicio < resto.length; inicio += concurrencia) {
+  if (skipped === 0) {
+    for (let inicio = 0; inicio < rest.length; inicio += concurrency) {
       exec.signal.throwIfAborted()
-      const trozo = resto.slice(inicio, inicio + concurrencia)
-      const resultados = await Promise.all(
-        trozo.map((product) => redactar(ctx, modelo, product, dominio, usados, exec.signal, [], esfuerzo, plugin)),
+      const chunk = rest.slice(inicio, inicio + concurrency)
+      const results = await Promise.all(
+        chunk.map((product) => writeDraft(ctx, model, product, domainConfig, used, exec.signal, [], effort, plugin)),
       )
       // Se aceptan en orden, no a la vez: el trozo se redactó contra la
       // misma foto de lo ya usado, así que dos fichas pueden haber elegido
       // el mismo handle sin saberlo. Quien llega segundo lo repite.
-      for (const [indice, resultado] of resultados.entries()) {
-        const product = trozo[indice]
-        const colisiones = resultado.draft ? choca(resultado.draft, usados) : []
-        if (colisiones.length === 0) {
-          asentar(product, resultado)
+      for (const [index, result] of results.entries()) {
+        const product = chunk[index]
+        const collisions = result.draft ? collidesWith(result.draft, used) : []
+        if (collisions.length === 0) {
+          settle(product, result)
           continue
         }
-        const reintento = await redactar(
-          ctx, modelo, product, dominio, usados, exec.signal, colisiones, esfuerzo, plugin,
+        const retry = await writeDraft(
+          ctx, model, product, domainConfig, used, exec.signal, collisions, effort, plugin,
         )
-        asentar(product, {
-          ...reintento,
-          rechazos: [...(resultado.rechazos ?? []), ...colisiones.map((x) => x.code)],
-          milisegundos: [...(resultado.milisegundos ?? []), ...(reintento.milisegundos ?? [])],
+        settle(product, {
+          ...retry,
+          rejections: [...(result.rejections ?? []), ...collisions.map((x) => x.code)],
+          durations: [...(result.durations ?? []), ...(retry.durations ?? [])],
         })
       }
 
       // Sin sonda, la guarda pasa al primer trozo: si nadie de ahí produjo un
       // bloque, el fallo es de configuración y no hay que seguir.
-      if (!sondear && inicio === 0 && generadas.length === 0
-          && resultados.every((r) => r.sistemico)) {
-        cortado = resto.length - trozo.length
+      if (!probe && inicio === 0 && written.length === 0
+          && results.every((r) => r.sistemico)) {
+        skipped = rest.length - chunk.length
         break
       }
     }
   }
-  guardarSeo(salida, fichas)
+  saveDrafts(storePath, drafts)
 
-  const segundos = Math.round((Date.now() - arranqueLote) / 100) / 10
-  const segundosPorLlamada = tiempos.length === 0
+  const seconds = Math.round((Date.now() - batchStart) / 100) / 10
+  const secondsPerCall = durations.length === 0
     ? 0
-    : Math.round((tiempos.reduce((a, b) => a + b, 0) / tiempos.length) / 100) / 10
+    : Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) / 100) / 10
 
-  const cuenta = new Map()
-  for (const code of rechazos) cuenta.set(code, (cuenta.get(code) ?? 0) + 1)
+  const counts = new Map()
+  for (const code of rejections) counts.set(code, (counts.get(code) ?? 0) + 1)
 
   return {
-    outputPath: salida,
+    outputPath: storePath,
     sourcePath: catalog.source?.path ?? '(desconocido)',
-    modelo: `${modelo.provider}/${modelo.model}`,
-    solicitados: objetivo.length,
-    generados: generadas.length,
-    fallidos: fallos.length,
-    cortado,
-    llamadas,
-    segundos,
-    razonamientoMaximo: picoRazonamiento,
-    segundosPorLlamada,
-    esfuerzo: esfuerzo ?? dominio.description?.reasoningEffort ?? 'high',
-    maxTokensConfigurado: dominio.description?.maxTokens ?? 16000,
-    sonda: sondear,
-    intentosMedios: generadas.length === 0
+    model: `${model.provider}/${model.model}`,
+    requested: targets.length,
+    written: written.length,
+    failed: failures.length,
+    skipped,
+    calls,
+    seconds,
+    peakReasoningChars: peakReasoning,
+    secondsPerCall,
+    effort: effort ?? domainConfig.description?.reasoningEffort ?? 'high',
+    maxTokens: domainConfig.description?.maxTokens ?? 16000,
+    probed: probe,
+    averageAttempts: written.length === 0
       ? 0
-      : Math.round((generadas.reduce((suma, f) => suma + f.attempts, 0) / generadas.length) * 100) / 100,
-    rechazos: [...cuenta]
+      : Math.round((written.reduce((suma, f) => suma + f.attempts, 0) / written.length) * 100) / 100,
+    rejections: [...counts]
       .sort((a, b) => b[1] - a[1])
       .map(([code, count]) => ({ code, count })),
-    pendientes: catalog.items.filter((item) => !fichas[item.sku]).length,
-    sinRevisar: Object.values(fichas).filter((ficha) => !ficha.reviewed).length,
-    fallos: fallos.slice(0, 5),
-    muestra: generadas.slice(0, 1),
+    pending: catalog.items.filter((item) => !drafts[item.sku]).length,
+    unreviewed: Object.values(drafts).filter((draft) => !draft.reviewed).length,
+    failures: failures.slice(0, 5),
+    sample: written.slice(0, 1),
     prompt: null,
   }
 }

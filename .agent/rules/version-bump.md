@@ -57,9 +57,12 @@ Verificación (debe dar 6 líneas: 1 de `package.json`, 2 del lock, 1 del preset
 1 del `agent.cordis.yml`, 1 del changelog):
 
 ```bash
-grep -rn "x.y.z" dsh-plugin/package.json dsh-plugin/package-lock.json \
+grep -rnF "x.y.z" dsh-plugin/package.json dsh-plugin/package-lock.json \
   agent-presets CHANGELOG.md | wc -l
 ```
+
+`-F` es necesario: sin él el punto es «cualquier carácter» y `1.0.0` encaja con `16000`, así que la
+comprobación da un número de más y deja de servir.
 
 ## Límite
 

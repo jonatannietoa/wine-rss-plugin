@@ -324,7 +324,7 @@ que un LLM comete solo, y cada uno tiene su comprobación determinista en `lib/s
 | Etiquetas HTML | Solo `p`, `ul`, `li`, `strong`, `em` |
 
 Cuando un borrador falla, los problemas vuelven al modelo redactados como correcciones y reintenta
-(`description.maxAttempts`, 3 por defecto). Si agota los intentos, el producto sale en `fallos` con
+(`description.maxAttempts`, 3 por defecto). Si agota los intentos, el producto sale en `failures` con
 el motivo y **no se guarda nada**: es mejor una ficha que falta que una mala.
 
 Lo que **no** hace: el punto 3 del artículo pide investigación de keywords con volumen y dificultad
@@ -343,13 +343,13 @@ Cuatro números del resumen dicen si queda algo que rascar:
 
 | | Qué significa |
 |---|---|
-| `segundos` | Lo que ha tardado de pared |
-| `segundosPorLlamada` | **El suelo.** Es latencia del proveedor: no baja paralelizando, solo con otro modelo |
-| `intentosMedios` | Cerca de 1 es lo bueno. Cada intento de más alarga la ronda entera, porque los reintentos de un producto son secuenciales |
-| `razonamientoMaximo` | Caracteres que gastó razonando la llamada que más razonó. Si se acerca a `maxTokens` × 3, el presupuesto va al filo y volverán las respuestas vacías |
-| `rechazos` | Qué regla ha rechazado borradores y cuántas veces. Es lo único que dice qué ajustar |
+| `seconds` | Lo que ha tardado de pared |
+| `secondsPerCall` | **El suelo.** Es latencia del proveedor: no baja paralelizando, solo con otro modelo |
+| `averageAttempts` | Cerca de 1 es lo bueno. Cada intento de más alarga la ronda entera, porque los reintentos de un producto son secuenciales |
+| `peakReasoningChars` | Caracteres que gastó razonando la llamada que más razonó. Si se acerca a `maxTokens` × 3, el presupuesto va al filo y volverán las respuestas vacías |
+| `rejections` | Qué regla ha rechazado borradores y cuántas veces. Es lo único que dice qué ajustar |
 
-El tiempo de pared es, aproximadamente, `segundosPorLlamada` × (rondas secuenciales), y las rondas
+El tiempo de pared es, aproximadamente, `secondsPerCall` × (rondas secuenciales), y las rondas
 son: la sonda si la hay, más el peor número de intentos de cada trozo paralelo. De ahí salen las tres
 palancas: quitar la sonda, bajar los intentos, y subir `concurrency` cuando el lote es grande.
 
@@ -367,7 +367,7 @@ mismas 4 llamadas: **6,4 s → 3,2 s**.
 `always` la hace siempre (lo más prudente y lo más lento) y `never` nunca. Sin sonda la guarda no
 desaparece: pasa al primer trozo, que se corta igual si nadie de ahí produce un bloque.
 
-Si `intentosMedios` sube, `rechazos` te dice dónde mirar antes de tocar nada:
+Si `averageAttempts` sube, `rejections` te dice dónde mirar antes de tocar nada:
 
 ```
 Reglas que están costando llamadas:
@@ -422,7 +422,7 @@ description:
   maxTokens: 4000          # la ficha entera ronda los 500
 ```
 
-Y el fallo se explica solo. Cada entrada de `fallos` dice cuántos caracteres de texto y de
+Y el fallo se explica solo. Cada entrada de `failures` dice cuántos caracteres de texto y de
 razonamiento llegaron, y enseña el principio de la respuesta cruda:
 
 ```
@@ -503,8 +503,8 @@ catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "high")
 catalog_seo(limit: 4)     # y leer las fichas de cada uno
 ```
 
-Se comparan `segundosPorLlamada`, `intentosMedios` y `rechazos`, que el resumen ya trae, y el propio
-resumen dice con qué `esfuerzo` se hizo cada lote.
+Se comparan `secondsPerCall`, `averageAttempts` y `rejections`, que el resumen ya trae, y el propio
+resumen dice con qué `effort` se hizo cada lote.
 
 ### Nada se publica sin revisar
 
@@ -681,6 +681,13 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 ```
 
 ### Un hexágono por tool
+
+> El detalle completo, con las reglas del reparto y el molde para las etapas 4 y 5, está en
+> **[ARCHITECTURE.md](ARCHITECTURE.md)**. Todo cambio de arquitectura se documenta ahí: es la regla
+> `.agent/rules/architecture-documented.md`.
+>
+> **El código está en inglés** —nombres y claves de salida—; los comentarios, la documentación y los
+> mensajes que ve el usuario, en castellano.
 
 ```
 dsh-plugin/lib/

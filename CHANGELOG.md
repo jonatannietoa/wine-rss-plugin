@@ -3,6 +3,9 @@
 Versión de la aplicación: `dsh-plugin/package.json`. Reglas de subida:
 `.agent/rules/version-bump.md`.
 
+- 1.0.0 — Código en inglés, prosa en castellano. **Rompe el contrato**: las claves de las
+  salidas de las cinco tools se renombran (`intentosMedios` → `averageAttempts`, etc.).
+  `ARCHITECTURE.md` documenta la arquitectura y una regla nueva obliga a mantenerlo.
 - 0.7.3 — Arquitectura hexagonal por tool: un hexágono por cada una, `domain/product.js`
   como único dominio compartido, y `index.js` reducido a cableado (1183 → 567 líneas).
 - 0.7.2 — `IN-PROGRESS-SEO.md`: estado de la etapa 3, el A/B abierto y las trampas encontradas.

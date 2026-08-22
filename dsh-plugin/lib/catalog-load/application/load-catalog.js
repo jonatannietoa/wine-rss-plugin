@@ -10,7 +10,7 @@
 
 import { normalizeRow } from '../../domain/product.js'
 import { readRows } from '../infra/csv-source.js'
-import { guardarCatalogo } from '../infra/catalog-store.js'
+import { saveCatalog } from '../infra/catalog-store.js'
 
 /**
  * Recorre el fichero entero y reparte las filas entre productos y rechazos.
@@ -21,32 +21,32 @@ import { guardarCatalogo } from '../infra/catalog-store.js'
  *   se le puede enseñar al modelo.
  */
 export function buildCatalog(config, opciones = {}) {
-  const { path, rows, columnasAusentes } = readRows(config, opciones.path)
-  const desde = opciones.modifiedSince ? String(opciones.modifiedSince).slice(0, 10) : null
+  const { path, rows, absentColumns } = readRows(config, opciones.path)
+  const from = opciones.modifiedSince ? String(opciones.modifiedSince).slice(0, 10) : null
 
   const items = []
   const rejected = []
-  let omitidosPorFecha = 0
+  let skippedByDate = 0
 
-  rows.forEach((row, indice) => {
+  rows.forEach((row, index) => {
     // +2: la cabecera es la línea 1 y las filas se cuentan desde 1.
-    const resultado = normalizeRow(row, config, indice + 2)
-    if (resultado.rejected) {
-      rejected.push(resultado.rejected)
+    const result = normalizeRow(row, config, index + 2)
+    if (result.rejected) {
+      rejected.push(result.rejected)
       return
     }
     // Sin fecha legible no se puede afirmar que no haya cambiado: entra.
-    if (desde && resultado.product.modifiedAt && resultado.product.modifiedAt < desde) {
-      omitidosPorFecha += 1
+    if (from && result.product.modifiedAt && result.product.modifiedAt < from) {
+      skippedByDate += 1
       return
     }
-    items.push(resultado.product)
+    items.push(result.product)
   })
 
   const contar = (valores) => {
-    const cuenta = new Map()
-    for (const valor of valores) cuenta.set(valor, (cuenta.get(valor) ?? 0) + 1)
-    return [...cuenta].sort((a, b) => b[1] - a[1])
+    const counts = new Map()
+    for (const value of valores) counts.set(value, (counts.get(value) ?? 0) + 1)
+    return [...counts].sort((a, b) => b[1] - a[1])
   }
 
   return {
@@ -59,17 +59,17 @@ export function buildCatalog(config, opciones = {}) {
     summary: {
       total: rows.length,
       ok: items.length,
-      rechazados: rejected.length,
-      omitidosPorFecha,
-      porGrupo: contar(items.map((item) => item.productType))
+      rejected: rejected.length,
+      skippedByDate,
+      byProductType: contar(items.map((item) => item.productType))
         .map(([productType, count]) => ({ productType, count })),
-      avisos: contar(items.flatMap((item) => item.warnings.map((aviso) => aviso.code)))
+      warnings: contar(items.flatMap((item) => item.warnings.map((aviso) => aviso.code)))
         .map(([code, count]) => ({ code, count })),
-      columnasAusentes,
+      absentColumns,
       // Acotados a propósito: el resultado del tool tiene que caber por debajo
       // del podador del preset (8192 caracteres).
-      rechazos: rejected.slice(0, 10),
-      muestra: items.slice(0, 2),
+      rejections: rejected.slice(0, 10),
+      sample: items.slice(0, 2),
     },
   }
 }
@@ -80,19 +80,19 @@ export function buildCatalog(config, opciones = {}) {
  * @param args - lo que pidió quien llama: `path`, `modifiedSince`, `sku`.
  * @returns el resumen, el producto pedido si lo hubo, y dónde ha quedado.
  */
-export function loadCatalog(dominio, args = {}) {
+export function loadCatalog(domainConfig, args = {}) {
   if (args.modifiedSince && !/^\d{4}-\d{2}-\d{2}$/.test(args.modifiedSince.trim())) {
     throw new Error(`modifiedSince debe ser una fecha aaaa-mm-dd (recibido "${args.modifiedSince}")`)
   }
 
-  const { catalog, summary } = buildCatalog(dominio, {
+  const { catalog, summary } = buildCatalog(domainConfig, {
     // La resolución la hace `resolveSourcePath`: nombre suelto en la bandeja
     // de entrada, relativa contra el directorio de la sesión, absoluta tal cual.
     path: args.path?.trim() || undefined,
     modifiedSince: args.modifiedSince?.trim() || undefined,
   })
 
-  const outputPath = guardarCatalogo(dominio, catalog)
+  const outputPath = saveCatalog(domainConfig, catalog)
 
   let producto = null
   if (args.sku) {

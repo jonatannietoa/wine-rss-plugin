@@ -43,20 +43,20 @@ export function sourceDirs(config) {
  * @param entrada - lo que pidió quien llama, o nada para el fichero habitual.
  * @returns la ruta absoluta del fichero a leer.
  */
-export function resolveSourcePath(config, entrada) {
-  const pedido = entrada === undefined || entrada === null ? '' : String(entrada).trim()
-  if (!pedido) return resolveFromConfig(config, config.source.path)
-  if (isAbsolute(pedido)) return pedido
-  if (pedido.includes(sep) || pedido.includes('/')) return resolve(pedido)
+export function resolveSourcePath(config, lead) {
+  const requested = lead === undefined || lead === null ? '' : String(lead).trim()
+  if (!requested) return resolveFromConfig(config, config.source.path)
+  if (isAbsolute(requested)) return requested
+  if (requested.includes(sep) || requested.includes('/')) return resolve(requested)
 
   const extension = extname(config.source.pattern ?? '') || '.csv'
-  for (const bandeja of sourceDirs(config)) {
-    for (const candidato of [pedido, `${pedido}${extension}`]) {
-      const ruta = join(bandeja, candidato)
-      if (existsSync(ruta)) return ruta
+  for (const inbox of sourceDirs(config)) {
+    for (const candidato of [requested, `${requested}${extension}`]) {
+      const path = join(inbox, candidato)
+      if (existsSync(path)) return path
     }
   }
-  return resolve(pedido)
+  return resolve(requested)
 }
 
 /**
@@ -75,10 +75,10 @@ export function searchedIn(config) {
  * @returns los nombres declarados que faltan.
  */
 export
-function columnasQueFaltan(cabecera, config) {
+function missingColumns(header, config) {
   return REQUIRED_COLUMNS
-    .map((clave) => config.columns[clave])
-    .filter((columna) => !cabecera.includes(columna))
+    .map((key) => config.columns[key])
+    .filter((columna) => !header.includes(columna))
 }
 
 /**
@@ -96,45 +96,45 @@ export function listSources(config) {
   const files = []
 
   for (const dir of sourceDirs(config)) {
-    const existe = existsSync(dir)
-    dirs.push({ dir, existe })
-    if (!existe) continue
+    const exists = existsSync(dir)
+    dirs.push({ dir, exists })
+    if (!exists) continue
 
-    for (const nombre of readdirSync(dir).sort()) {
-      if (nombre.startsWith('.')) continue
-      const ruta = join(dir, nombre)
+    for (const entryName of readdirSync(dir).sort()) {
+      if (entryName.startsWith('.')) continue
+      const path = join(dir, entryName)
       let info
       try {
-        info = statSync(ruta)
+        info = statSync(path)
       } catch {
         continue
       }
       if (!info.isFile()) continue
 
-      const fichero = {
-        name: nombre,
+      const entry = {
+        name: entryName,
         dir,
-        path: ruta,
+        path: path,
         bytes: info.size,
         modifiedAt: info.mtime.toISOString().slice(0, 10),
         rows: null,
         compatible: false,
-        problema: null,
+        issue: null,
       }
-      if (extname(nombre).toLowerCase() !== extension.toLowerCase()) {
-        fichero.problema = `no es un ${extension} (la configuración solo lee ${config.source.format})`
+      if (extname(entryName).toLowerCase() !== extension.toLowerCase()) {
+        entry.issue = `no es un ${extension} (la configuración solo lee ${config.source.format})`
       } else {
         try {
-          const { rows } = readRows(config, ruta)
-          const faltan = columnasQueFaltan(Object.keys(rows[0]), config)
-          fichero.rows = rows.length
-          fichero.compatible = faltan.length === 0
-          if (faltan.length > 0) fichero.problema = `le faltan columnas: ${faltan.join(', ')}`
+          const { rows } = readRows(config, path)
+          const missing = missingColumns(Object.keys(rows[0]), config)
+          entry.rows = rows.length
+          entry.compatible = missing.length === 0
+          if (missing.length > 0) entry.issue = `le faltan columnas: ${missing.join(', ')}`
         } catch (error) {
-          fichero.problema = error.message
+          entry.issue = error.message
         }
       }
-      files.push(fichero)
+      files.push(entry)
     }
   }
   return { dirs, files }
@@ -149,9 +149,9 @@ export function listSources(config) {
  */
 export function readRows(config, pathOverride) {
   const path = resolveSourcePath(config, pathOverride)
-  let texto
+  let text
   try {
-    texto = readFileSync(path, { encoding: config.source.encoding ?? 'utf8' })
+    text = readFileSync(path, { encoding: config.source.encoding ?? 'utf8' })
   } catch (error) {
     if (error.code === 'ENOENT' && pathOverride) {
       throw new Error(
@@ -162,7 +162,7 @@ export function readRows(config, pathOverride) {
     throw new Error(`no se pudo leer el catálogo en ${path}: ${error.message}`)
   }
 
-  const rows = parse(texto, {
+  const rows = parse(text, {
     bom: true,
     delimiter: config.source.delimiter ?? ',',
     // El export del ERP viene en CRLF, pero un fichero editado a mano puede traer
@@ -174,21 +174,21 @@ export function readRows(config, pathOverride) {
     // La cabecera del ERP trae espacios de relleno (' Precio Venta tienda').
     columns: (header) => (config.source.trimHeaders === false
       ? header
-      : header.map((nombre) => String(nombre).trim())),
+      : header.map((entryName) => String(entryName).trim())),
   })
   if (rows.length === 0) throw new Error(`el catálogo en ${path} no trae ninguna fila`)
 
-  const cabecera = Object.keys(rows[0])
-  const faltan = columnasQueFaltan(cabecera, config)
-  if (faltan.length > 0) {
+  const header = Object.keys(rows[0])
+  const missing = missingColumns(header, config)
+  if (missing.length > 0) {
     throw new Error(
-      `el fichero ${path} no trae las columnas que declara la configuración: ${faltan.join(', ')}. `
-      + `Las que trae son: ${cabecera.join(', ')}`,
+      `el fichero ${path} no trae las columnas que declara la configuración: ${missing.join(', ')}. `
+      + `Las que trae son: ${header.join(', ')}`,
     )
   }
-  const columnasAusentes = OPTIONAL_COLUMNS
-    .filter((clave) => config.columns[clave] && !cabecera.includes(config.columns[clave]))
-    .map((clave) => `${clave} (${config.columns[clave]})`)
+  const absentColumns = OPTIONAL_COLUMNS
+    .filter((key) => config.columns[key] && !header.includes(config.columns[key]))
+    .map((key) => `${key} (${config.columns[key]})`)
 
-  return { path, rows, columnasAusentes }
+  return { path, rows, absentColumns }
 }

@@ -113,7 +113,7 @@ apply({ tools: { register: (t) => { tools[t.name] = t } }, llm: {} }, Config({ c
 console.log(`   plugin "${name}" con ${Object.keys(tools).length} herramientas: ${Object.keys(tools).join(', ')}`)
 
 const carga = await tools.catalog_load.execute({})
-console.log(`   catalog_load: ${carga.ok} productos de ${carga.total} filas, ${carga.rechazados} rechazadas`)
+console.log(`   catalog_load: ${carga.ok} productos de ${carga.total} filas, ${carga.rejected} rechazadas`)
 
 const seco = await tools.catalog_describe.execute({ limit: 1, dryRun: true }, {
   agent: { options: {} },
@@ -121,7 +121,7 @@ const seco = await tools.catalog_describe.execute({ limit: 1, dryRun: true }, {
 })
 if (!seco.prompt) throw new Error('dryRun tenía que devolver el prompt y no lo ha hecho')
 console.log(`   catalog_describe dryRun: prompt de ${seco.prompt.system.length}+${seco.prompt.user.length} caracteres`)
-console.log(`   pendientes de ficha SEO: ${seco.pendientes}`)
+console.log(`   pendientes de ficha SEO: ${seco.pending}`)
 NODE
 ENTRADA="$ENLACE/lib/index.js" CONFIG="$REPO/catalog.config.yml" node "$SMOKE" || {
   rm -f "$SMOKE"; morir "el plugin no arranca desde el perfil de dsh"

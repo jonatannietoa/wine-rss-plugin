@@ -22,14 +22,14 @@ const MAX_CRUDA = 500
  * @param peticion - `{ modelo, system, user, reasoningEffort, maxTokens, temperature, plugin, signal }`.
  * @returns `{ texto, razonamiento, milisegundos }`.
  */
-export async function pedirFicha(ctx, peticion) {
-  const arranque = Date.now()
-  let texto = ''
-  let razonamiento = 0
+export async function requestDraft(ctx, peticion) {
+  const start = Date.now()
+  let text = ''
+  let reasoning = 0
   try {
-    for await (const trozo of ctx.llm.stream({
-      provider: peticion.modelo.provider,
-      model: peticion.modelo.model,
+    for await (const chunk of ctx.llm.stream({
+      provider: peticion.model.provider,
+      model: peticion.model.model,
       system: peticion.system,
       messages: [createUserMessage({
         content: [{ type: 'text', text: peticion.user }],
@@ -40,8 +40,8 @@ export async function pedirFicha(ctx, peticion) {
       ...(peticion.temperature === undefined ? {} : { temperature: peticion.temperature }),
       signal: peticion.signal,
     })) {
-      if (trozo.type === 'text-delta') texto += trozo.text
-      else if (trozo.type === 'reasoning-delta') razonamiento += trozo.text.length
+      if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'reasoning-delta') reasoning += chunk.text.length
     }
   } catch (error) {
     // Qué esfuerzos acepta el adaptador depende de su versión, y el error crudo
@@ -56,7 +56,7 @@ export async function pedirFicha(ctx, peticion) {
     }
     throw error
   }
-  return { texto, razonamiento, milisegundos: Date.now() - arranque, cruda: texto.slice(0, MAX_CRUDA) }
+  return { text, reasoning, durations: Date.now() - start, raw: text.slice(0, MAX_CRUDA) }
 }
 
 /**
@@ -75,27 +75,27 @@ export async function pedirFicha(ctx, peticion) {
  * @returns el borrador con los seis campos, ya recortados.
  */
 export function parseBlocks(raw) {
-  const texto = String(raw ?? '').replace(/^\s*```[a-z]*\s*$|^\s*```\s*$/gim, '')
+  const text = String(raw ?? '').replace(/^\s*```[a-z]*\s*$|^\s*```\s*$/gim, '')
   const borrador = {}
   for (const campo of SEO_FIELDS) borrador[campo] = ''
 
   // `### campo` en su propia línea abre un bloque; se cierra con el siguiente.
-  const cabecera = new RegExp(`^[ \\t]*#{1,6}[ \\t]*(${SEO_FIELDS.join('|')})[ \\t]*:?[ \\t]*$`, 'gim')
-  const marcas = [...texto.matchAll(cabecera)]
-  if (marcas.length === 0) {
+  const header = new RegExp(`^[ \\t]*#{1,6}[ \\t]*(${SEO_FIELDS.join('|')})[ \\t]*:?[ \\t]*$`, 'gim')
+  const headings = [...text.matchAll(header)]
+  if (headings.length === 0) {
     throw new Error(
       'la respuesta no trae ningún bloque "### campo": '
-      + `${texto.trim() ? `empieza por "${texto.trim().slice(0, 80)}…"` : 'está vacía'}`,
+      + `${text.trim() ? `empieza por "${text.trim().slice(0, 80)}…"` : 'está vacía'}`,
     )
   }
 
   // La cabecera se compara sin distinguir mayúsculas, así que hay que volver al
   // nombre canónico del campo: `#### Handle:` es `handle`.
-  const canonico = new Map(SEO_FIELDS.map((campo) => [campo.toLowerCase(), campo]))
-  marcas.forEach((marca, indice) => {
-    const desde = marca.index + marca[0].length
-    const hasta = indice + 1 < marcas.length ? marcas[indice + 1].index : texto.length
-    borrador[canonico.get(marca[1].toLowerCase())] = texto.slice(desde, hasta).trim()
+  const canonicalName = new Map(SEO_FIELDS.map((campo) => [campo.toLowerCase(), campo]))
+  headings.forEach((marca, index) => {
+    const from = marca.index + marca[0].length
+    const to = index + 1 < headings.length ? headings[index + 1].index : text.length
+    borrador[canonicalName.get(marca[1].toLowerCase())] = text.slice(from, to).trim()
   })
   return borrador
 }

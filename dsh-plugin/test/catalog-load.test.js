@@ -20,10 +20,10 @@ const producto = (sku) => {
 }
 
 /** Los códigos de aviso de un producto. */
-const avisos = (sku) => producto(sku).warnings.map((aviso) => aviso.code)
+const warnings = (sku) => producto(sku).warnings.map((aviso) => aviso.code)
 
 /** La fila rechazada con ese SKU. */
-const rechazo = (sku) => catalog.rejected.find((fila) => fila.sku === sku)
+const rejectionOf = (sku) => catalog.rejected.find((fila) => fila.sku === sku)
 
 test('la configuración de la tienda es válida', () => {
   assert.equal(config.source.format, 'csv')
@@ -57,15 +57,15 @@ test('un fichero que no trae las columnas declaradas falla nombrándolas', () =>
 test('reparte todas las filas entre productos y rechazos, sin perder ninguna', () => {
   assert.equal(summary.total, 22)
   assert.equal(summary.ok, 18)
-  assert.equal(summary.rechazados, 4)
-  assert.equal(summary.ok + summary.rechazados + summary.omitidosPorFecha, summary.total)
+  assert.equal(summary.rejected, 4)
+  assert.equal(summary.ok + summary.rejected + summary.skippedByDate, summary.total)
   assert.equal(catalog.items.length, summary.ok)
 })
 
 test('rechaza lo que no se puede publicar, con el motivo y la línea', () => {
-  assert.match(rechazo('000113').reason, /price: valor no numérico "#N\/A"/)
-  assert.match(rechazo('000114').reason, /grupo "MAGNUM" no declarado/)
-  assert.match(rechazo('000116').reason, /stock: valor no entero "muchas"/)
+  assert.match(rejectionOf('000113').reason, /price: valor no numérico "#N\/A"/)
+  assert.match(rejectionOf('000114').reason, /grupo "MAGNUM" no declarado/)
+  assert.match(rejectionOf('000116').reason, /stock: valor no entero "muchas"/)
   const sinSku = catalog.rejected.find((fila) => fila.sku === null)
   assert.match(sinSku.reason, /sku vacío/)
   assert.equal(sinSku.row, 16)
@@ -89,7 +89,7 @@ test('separa el formato del envase en todas las variantes del fichero', () => {
 test('avisa en vez de inventarlo cuando el título no trae formato', () => {
   assert.equal(producto('000106').format, null)
   assert.equal(producto('000106').volumeMl, null)
-  assert.ok(avisos('000106').includes('sinFormato'))
+  assert.ok(warnings('000106').includes('sinFormato'))
 })
 
 test('capitaliza el título dejando las palabras llanas y los números', () => {
@@ -116,21 +116,21 @@ test('lee los números con el formato local del ERP', () => {
 test('avisa del coste ilegible sin tirar el producto', () => {
   assert.equal(producto('000117').cost, null)
   assert.equal(producto('000117').price, 9)
-  assert.ok(avisos('000117').includes('costeInvalido'))
+  assert.ok(warnings('000117').includes('costeInvalido'))
 })
 
 test('convierte la fecha del ERP a ISO y avisa si no existe', () => {
   assert.equal(producto('000101').modifiedAt, '2026-01-09')
   // 31 de febrero: el ERP la escribe, el calendario no la tiene.
   assert.equal(producto('000118').modifiedAt, null)
-  assert.ok(avisos('000118').includes('fechaInvalida'))
+  assert.ok(warnings('000118').includes('fechaInvalida'))
 })
 
 test('un flag de bloqueo que no entiende se trata como bloqueado', () => {
   assert.equal(producto('000101').blocked, false)
   assert.equal(producto('000106').blocked, true)
   assert.equal(producto('000119').blocked, true)
-  assert.ok(avisos('000119').includes('bloqueoDesconocido'))
+  assert.ok(warnings('000119').includes('bloqueoDesconocido'))
 })
 
 test('traduce el grupo del ERP al tipo de producto con el que se categoriza', () => {
@@ -148,7 +148,7 @@ test('compone los tags con el origen, la elaboración y el grupo', () => {
   // Una elaboración que la taxonomía no traduce se publica tal cual.
   assert.deepEqual(producto('000122').tags, ['Alella', 'ANFORA'])
   assert.deepEqual(producto('000112').tags, [])
-  assert.ok(avisos('000112').includes('sinOrigen'))
+  assert.ok(warnings('000112').includes('sinOrigen'))
 })
 
 test('no publica el código interno de proveedor como marca', () => {
@@ -158,9 +158,9 @@ test('no publica el código interno de proveedor como marca', () => {
 
 test('modifiedSince deja fuera lo que el ERP no ha tocado', () => {
   const incremental = buildCatalog(config, { path: FIXTURE, modifiedSince: '2026-02-10' })
-  assert.ok(incremental.summary.omitidosPorFecha > 0)
+  assert.ok(incremental.summary.skippedByDate > 0)
   assert.equal(
-    incremental.summary.ok + incremental.summary.rechazados + incremental.summary.omitidosPorFecha,
+    incremental.summary.ok + incremental.summary.rejected + incremental.summary.skippedByDate,
     incremental.summary.total,
   )
   for (const item of incremental.catalog.items) {
@@ -170,44 +170,44 @@ test('modifiedSince deja fuera lo que el ERP no ha tocado', () => {
 })
 
 test('la bandeja de entrada dice qué hay y si sirve', () => {
-  const bandeja = temporal()
+  const inbox = temporal()
   // Uno bueno: el fixture entero.
-  const bueno = join(bandeja, 'cliente-bueno.csv')
+  const bueno = join(inbox, 'cliente-bueno.csv')
   writeFileSync(bueno, readFileSync(FIXTURE, 'utf8'), 'utf8')
   // Uno con la cabecera de otro ERP.
-  writeFileSync(join(bandeja, 'cliente-ajeno.csv'), 'Item Code,Retail EUR,Qty\nA1,10.00,3\n', 'utf8')
+  writeFileSync(join(inbox, 'cliente-ajeno.csv'), 'Item Code,Retail EUR,Qty\nA1,10.00,3\n', 'utf8')
   // Uno que no es un CSV.
-  writeFileSync(join(bandeja, 'precios.xlsx'), 'no soy un csv', 'utf8')
+  writeFileSync(join(inbox, 'precios.xlsx'), 'no soy un csv', 'utf8')
   // Los ocultos no cuentan.
-  writeFileSync(join(bandeja, '.DS_Store'), '', 'utf8')
+  writeFileSync(join(inbox, '.DS_Store'), '', 'utf8')
 
-  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [inbox] }))
   const { dirs, files } = listSources(config)
-  assert.deepEqual(dirs, [{ dir: bandeja, existe: true }])
+  assert.deepEqual(dirs, [{ dir: inbox, exists: true }])
   assert.deepEqual(files.map((f) => f.name), ['cliente-ajeno.csv', 'cliente-bueno.csv', 'precios.xlsx'])
 
   const porNombre = new Map(files.map((f) => [f.name, f]))
   assert.equal(porNombre.get('cliente-bueno.csv').compatible, true)
   assert.equal(porNombre.get('cliente-bueno.csv').rows, 22)
   assert.equal(porNombre.get('cliente-ajeno.csv').compatible, false)
-  assert.match(porNombre.get('cliente-ajeno.csv').problema, /no trae las columnas/)
-  assert.match(porNombre.get('precios.xlsx').problema, /no es un \.csv/)
+  assert.match(porNombre.get('cliente-ajeno.csv').issue, /no trae las columnas/)
+  assert.match(porNombre.get('precios.xlsx').issue, /no es un \.csv/)
 })
 
 test('una bandeja que no existe no es un error, solo está vacía', () => {
   const config = loadConfig(configTemporal((c) => { c.source.dirs = ['/no/existe/esta/ruta'] }))
   const { dirs, files } = listSources(config)
-  assert.deepEqual(dirs, [{ dir: '/no/existe/esta/ruta', existe: false }])
+  assert.deepEqual(dirs, [{ dir: '/no/existe/esta/ruta', exists: false }])
   assert.deepEqual(files, [])
 })
 
 test('basta el nombre del fichero si está en la bandeja, con extensión o sin ella', () => {
-  const bandeja = temporal()
-  writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
-  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  const inbox = temporal()
+  writeFileSync(join(inbox, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [inbox] }))
 
-  assert.equal(resolveSourcePath(config, 'cliente-x.csv'), join(bandeja, 'cliente-x.csv'))
-  assert.equal(resolveSourcePath(config, 'cliente-x'), join(bandeja, 'cliente-x.csv'))
+  assert.equal(resolveSourcePath(config, 'cliente-x.csv'), join(inbox, 'cliente-x.csv'))
+  assert.equal(resolveSourcePath(config, 'cliente-x'), join(inbox, 'cliente-x.csv'))
   // Sin pedir nada, el catálogo habitual de la tienda.
   assert.equal(resolveSourcePath(config), FIXTURE)
   // Una ruta absoluta se respeta tal cual.
@@ -215,13 +215,13 @@ test('basta el nombre del fichero si está en la bandeja, con extensión o sin e
 })
 
 test('catalog_load carga por nombre y dice de qué fichero salió', async () => {
-  const bandeja = temporal()
-  writeFileSync(join(bandeja, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
-  const { catalog_load: tool } = registrar(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  const inbox = temporal()
+  writeFileSync(join(inbox, 'cliente-x.csv'), readFileSync(FIXTURE, 'utf8'), 'utf8')
+  const { catalog_load: tool } = registrar(configTemporal((c) => { c.source.dirs = [inbox] }))
 
-  const resultado = await tool.execute({ path: 'cliente-x' })
-  assert.equal(resultado.sourcePath, join(bandeja, 'cliente-x.csv'))
-  assert.equal(resultado.ok, 18)
+  const result = await tool.execute({ path: 'cliente-x' })
+  assert.equal(result.sourcePath, join(inbox, 'cliente-x.csv'))
+  assert.equal(result.ok, 18)
 })
 
 test('busca en varias carpetas, en orden, y expande ~', () => {
@@ -240,20 +240,20 @@ test('busca en varias carpetas, en orden, y expande ~', () => {
 })
 
 test('cuando no encuentra un fichero dice dónde ha buscado', () => {
-  const bandeja = temporal()
-  const config = loadConfig(configTemporal((c) => { c.source.dirs = [bandeja] }))
+  const inbox = temporal()
+  const config = loadConfig(configTemporal((c) => { c.source.dirs = [inbox] }))
   assert.throws(
     () => buildCatalog(config, { path: 'no-existe' }),
-    (error) => error.message.includes('He buscado en') && error.message.includes(bandeja)
+    (error) => error.message.includes('He buscado en') && error.message.includes(inbox)
       && error.message.includes('catalog_sources'),
   )
 })
 
 test('catalog_sources incluye el catálogo habitual, no solo la bandeja', async () => {
   const { catalog_sources: tool } = registrar(configTemporal((c) => { c.source.dirs = [temporal()] }))
-  const resultado = await tool.execute({})
-  assert.equal(resultado.habitual, FIXTURE)
-  assert.deepEqual(resultado.files, [])
+  const result = await tool.execute({})
+  assert.equal(result.defaultSource, FIXTURE)
+  assert.deepEqual(result.files, [])
 })
 
 test('el plugin registra las herramientas del pipeline', () => {
@@ -266,28 +266,28 @@ test('el plugin registra las herramientas del pipeline', () => {
 
 test('el tool escribe el catálogo completo y devuelve solo el resumen', async () => {
   const { catalog_load: tool } = registrar(configTemporal())
-  const resultado = await tool.execute({})
+  const result = await tool.execute({})
 
-  assert.equal(resultado.ok, 18)
-  assert.equal(resultado.producto, null)
-  assert.ok(resultado.muestra.length <= 2, 'la muestra va acotada')
-  assert.equal(resultado.items, undefined, 'los productos no viajan en el resultado')
+  assert.equal(result.ok, 18)
+  assert.equal(result.producto, null)
+  assert.ok(result.sample.length <= 2, 'la muestra va acotada')
+  assert.equal(result.items, undefined, 'los productos no viajan en el resultado')
 
-  const escrito = JSON.parse(readFileSync(resultado.outputPath, 'utf8'))
+  const escrito = JSON.parse(readFileSync(result.outputPath, 'utf8'))
   assert.equal(escrito.items.length, 18)
   assert.equal(escrito.rejected.length, 4)
   assert.equal(escrito.source.rows, 22)
 
   // El resultado tiene que caber por debajo del podador del preset.
-  const informe = tool.output.render({}, resultado)[0].text
-  assert.ok(informe.length < 8192, `el informe ocupa ${informe.length} caracteres`)
+  const report = tool.output.render({}, result)[0].text
+  assert.ok(report.length < 8192, `el informe ocupa ${report.length} caracteres`)
 })
 
 test('el tool devuelve un producto concreto por sku', async () => {
   const { catalog_load: tool } = registrar(configTemporal())
-  const resultado = await tool.execute({ sku: '000109' })
-  assert.equal(resultado.producto.title, 'Ejemplo Magnum')
-  assert.equal(resultado.producto.volumeMl, 1500)
+  const result = await tool.execute({ sku: '000109' })
+  assert.equal(result.producto.title, 'Ejemplo Magnum')
+  assert.equal(result.producto.volumeMl, 1500)
 })
 
 test('el tool explica por qué un sku rechazado no está en el catálogo', async () => {

@@ -8,7 +8,7 @@
  * @module dsh-plugin-catalog-agent/catalog-review/application/review-catalog
  */
 
-import { cargarSeo, guardarSeo, rutaSeo } from '../../catalog-describe/infra/seo-store.js'
+import { loadDrafts, saveDrafts, draftsPath } from '../../catalog-describe/infra/seo-store.js'
 
 /**
  * Las fichas guardadas, para poder leerlas antes de aprobar nada.
@@ -16,28 +16,28 @@ import { cargarSeo, guardarSeo, rutaSeo } from '../../catalog-describe/infra/seo
  * @param args - `sku`, `skus`, `limit` o `soloSinRevisar`.
  * @returns las fichas elegidas y el recuento de lo que hay.
  */
-export function readSeo(dominio, args = {}) {
-  const salida = rutaSeo(dominio)
-  const fichas = cargarSeo(salida)
-  const todas = Object.values(fichas)
+export function readSeo(domainConfig, args = {}) {
+  const storePath = draftsPath(domainConfig)
+  const drafts = loadDrafts(storePath)
+  const all = Object.values(drafts)
 
-  const pedidos = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
-  let elegidas
-  let noEncontrados = []
-  if (pedidos.length > 0) {
-    elegidas = pedidos.map((sku) => fichas[sku]).filter(Boolean)
-    noEncontrados = pedidos.filter((sku) => !fichas[sku])
+  const requestedSkus = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
+  let chosen
+  let notFound = []
+  if (requestedSkus.length > 0) {
+    chosen = requestedSkus.map((sku) => drafts[sku]).filter(Boolean)
+    notFound = requestedSkus.filter((sku) => !drafts[sku])
   } else {
-    const candidatas = args.soloSinRevisar ? todas.filter((f) => !f.reviewed) : todas
-    elegidas = candidatas.slice(0, args.limit ?? 4)
+    const candidates = args.soloSinRevisar ? all.filter((f) => !f.reviewed) : all
+    chosen = candidates.slice(0, args.limit ?? 4)
   }
 
   return {
-    outputPath: salida,
-    total: todas.length,
-    sinRevisar: todas.filter((f) => !f.reviewed).length,
-    fichas: elegidas,
-    noEncontrados,
+    outputPath: storePath,
+    total: all.length,
+    unreviewed: all.filter((f) => !f.reviewed).length,
+    drafts: chosen,
+    notFound,
   }
 }
 
@@ -47,35 +47,35 @@ export function readSeo(dominio, args = {}) {
  * @param args - `sku`, `skus` o `all`.
  * @returns cuántas se han marcado y cuántas quedan.
  */
-export function reviewCatalog(dominio, args = {}) {
-  const salida = rutaSeo(dominio)
-  const fichas = cargarSeo(salida)
+export function reviewCatalog(domainConfig, args = {}) {
+  const storePath = draftsPath(domainConfig)
+  const drafts = loadDrafts(storePath)
 
-  const pedidos = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
-  if (pedidos.length === 0 && !args.all) {
+  const requestedSkus = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
+  if (requestedSkus.length === 0 && !args.all) {
     throw new Error('di qué revisar: `sku`, `skus`, o `all: true` para todas las pendientes')
   }
 
-  const objetivo = args.all ? Object.keys(fichas) : pedidos
-  const sinFicha = objetivo.filter((sku) => !fichas[sku])
-  let revisadas = 0
-  let yaEstaban = 0
-  for (const sku of objetivo) {
-    const ficha = fichas[sku]
-    if (!ficha) continue
-    if (ficha.reviewed) yaEstaban += 1
+  const targets = args.all ? Object.keys(drafts) : requestedSkus
+  const withoutDraft = targets.filter((sku) => !drafts[sku])
+  let newlyReviewed = 0
+  let alreadyReviewed = 0
+  for (const sku of targets) {
+    const draft = drafts[sku]
+    if (!draft) continue
+    if (draft.reviewed) alreadyReviewed += 1
     else {
-      ficha.reviewed = true
-      revisadas += 1
+      draft.reviewed = true
+      newlyReviewed += 1
     }
   }
-  guardarSeo(salida, fichas)
+  saveDrafts(storePath, drafts)
 
   return {
-    outputPath: salida,
-    revisadas,
-    yaEstaban,
-    sinRevisar: Object.values(fichas).filter((ficha) => !ficha.reviewed).length,
-    sinFicha,
+    outputPath: storePath,
+    newlyReviewed,
+    alreadyReviewed,
+    unreviewed: Object.values(drafts).filter((draft) => !draft.reviewed).length,
+    withoutDraft,
   }
 }

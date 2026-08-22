@@ -19,20 +19,20 @@ import { resolveFromConfig } from '../../config.js'
  * @returns el catálogo con sus productos.
  */
 export
-function cargarCatalogo(dominio) {
-  const path = resolveFromConfig(dominio, dominio.output?.catalogJson ?? './.artifacts/catalog.json')
+function readCatalog(domainConfig) {
+  const path = resolveFromConfig(domainConfig, domainConfig.output?.catalogJson ?? './.artifacts/catalog.json')
   if (!existsSync(path)) {
     throw new Error(
       `no hay catálogo cargado (falta ${path}). Llama antes a catalog_load, y si el usuario quiere `
       + 'un fichero concreto, pásale su nombre en `path`.',
     )
   }
-  let datos
+  let data
   try {
-    datos = JSON.parse(readFileSync(path, 'utf8'))
+    data = JSON.parse(readFileSync(path, 'utf8'))
   } catch (error) {
     throw new Error(`no se pudo leer el catálogo cargado en ${path}: ${error.message}`)
   }
-  if (!Array.isArray(datos?.items)) throw new Error(`${path} no tiene una lista de productos`)
-  return datos
+  if (!Array.isArray(data?.items)) throw new Error(`${path} no tiene una lista de productos`)
+  return data
 }
