@@ -13,6 +13,56 @@
  * @module dsh-plugin-catalog-agent/catalog-describe/domain/seo-draft
  */
 
+import type { CatalogConfig } from '../../config.ts'
+import type { Product } from '../../domain/product.ts'
+
+/** Los seis textos de una ficha, tal como los devuelve el modelo. */
+export type SeoDraft = Record<SeoField, string>
+
+/** Uno de los seis campos. */
+export type SeoField = 'seoTitle' | 'seoDescription' | 'bodyHtml' | 'handle' | 'altText' | 'feedDescription'
+
+/** Una ficha ya aceptada y guardada, con su procedencia. */
+export interface StoredDraft extends SeoDraft {
+  readonly sku: string
+  reviewed: boolean
+  readonly generatedAt: string
+  readonly model: string
+  readonly attempts: number
+  /** Los límites blandos que se pasó. La ficha vale, pero conviene mirarla. */
+  readonly warnings?: readonly DraftProblem[]
+}
+
+/**
+ * Lo que una regla reprocha a un borrador.
+ *
+ * El `message` es para el modelo, que lo recibe como corrección; el `code` es
+ * estable y sirve para contar qué regla rechaza más.
+ */
+export interface DraftProblem {
+  readonly code: string
+  readonly message: string
+}
+
+/**
+ * Lo que la validación tiene que decir de un borrador.
+ *
+ * `problems` lo tumban; `warnings` no. Cuál es cuál lo decide
+ * `description.softRules`, porque de los límites solo algunos son restricciones
+ * de verdad —el de `seoTitle` lo impone el buscador— y los demás los elegimos
+ * nosotros.
+ */
+export interface DraftReview {
+  readonly problems: DraftProblem[]
+  readonly warnings: DraftProblem[]
+}
+
+/** Los handles y textos ya en uso, para que dos fichas no salgan iguales. */
+export interface UsedSets {
+  readonly handles?: Set<string>
+  readonly texts?: Set<string>
+}
+
 /** Los campos que el modelo tiene que devolver, y que se publican en Shopify. */
 export const SEO_FIELDS = [
   'seoTitle', 'seoDescription', 'bodyHtml', 'handle', 'altText', 'feedDescription',
@@ -29,7 +79,7 @@ export const FIELD_ROLES = {
 }
 
 /** Quita las etiquetas de un HTML y normaliza los espacios. */
-export function stripTags(html) {
+export function stripTags(html: unknown): string {
   return String(html ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
@@ -40,7 +90,7 @@ export function stripTags(html) {
  * @param maxChars - longitud máxima; se corta por guión para no partir palabras.
  * @returns el slug.
  */
-export function slugify(text, maxChars = 70) {
+export function slugify(text: unknown, maxChars = 70): string {
   const slug = String(text ?? '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -64,9 +114,9 @@ export function slugify(text, maxChars = 70) {
  * @param config - la configuración cargada.
  * @returns las keywords, sin repetidas ni vacías.
  */
-export function keywords(product, config) {
+export function keywords(product: Product, config: CatalogConfig): string[] {
   const campos = config.description?.keywordsFrom ?? ['productType', 'origin']
-  return [...new Set(campos.map((campo) => readable(product, campo, config)).filter(Boolean))]
+  return [...new Set(campos.map((field) => readable(product, field, config)).filter(Boolean))]
 }
 
 /**
@@ -79,23 +129,22 @@ export function keywords(product, config) {
  * @param config - la configuración cargada.
  * @returns el valor legible, o `null` si el producto no lo trae.
  */
-export
-function readable(product, campo, config) {
-  const bruto = product[campo]
+export function readable(product: Product, field: string, config: CatalogConfig): string | null {
+  const bruto = product[field]
   if (bruto === null || bruto === undefined || bruto === '') return null
-  if (campo === 'productionType') return config.taxonomy?.productionTypes?.[bruto] ?? bruto
+  if (field === 'productionType') return config.taxonomy?.productionTypes?.[bruto] ?? bruto
   return bruto
 }
 
 /** Cuenta cuántas veces aparece `aguja` en `pajar`, sin distinguir mayúsculas. */
-function countOccurrences(haystack, needle) {
+function countOccurrences(haystack: string, needle: string): number {
   if (!needle) return 0
   const escapada = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return (haystack.match(new RegExp(escapada, 'gi')) ?? []).length
 }
 
 /** Comprueba la estructura escaneable del cuerpo: un párrafo y luego bullets. */
-function validateBody(bodyHtml, config, flag) {
+function validateBody(bodyHtml: string, config: CatalogConfig, flag: (code: string, message: string) => void): void {
   const cfg = config.description?.bodyHtml ?? {}
   const bullets = cfg.bullets ?? { min: 3, max: 5, maxChars: 90 }
   const allowedTags = cfg.allowTags ?? ['p', 'ul', 'li', 'strong', 'em']
@@ -153,26 +202,33 @@ function validateBody(bodyHtml, config, flag) {
  *   duplicados entre productos.
  * @returns los problemas encontrados, en español.
  */
-export function validateDraft(draft, product, config, used = {}) {
+export function validateDraft(draft: SeoDraft, product: Product, config: CatalogConfig, used: UsedSets = {}): DraftReview {
   const d = config.description ?? {}
-  const problems = []
+  const problems: DraftProblem[] = []
+  const warnings: DraftProblem[] = []
   const handles = used.handles ?? new Set()
   const texts = used.texts ?? new Set()
-  const flag = (code, message) => problems.push({ code, message })
-
-  for (const campo of SEO_FIELDS) {
-    if (!draft[campo]) flag('faltaCampo', `falta ${campo}`)
+  const soft = new Set(d.softRules ?? [])
+  // Una regla blanda no tira la ficha: se anota y la ficha se publica igual.
+  // Medido: sin razonamiento, el modelo se pasa de los topes por 1-5 caracteres
+  // y reintentar la ficha entera por eso cuesta una llamada completa.
+  const flag = (code: string, message: string) => {
+    (soft.has(code) ? warnings : problems).push({ code, message })
   }
-  if (problems.length > 0) return problems
 
-  for (const campo of SEO_FIELDS) {
-    const maxAllowed = d[campo]?.maxChars
-    if (maxAllowed && draft[campo].length > maxAllowed) {
-      flag(`largo:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el máximo es ${maxAllowed}`)
+  for (const field of SEO_FIELDS) {
+    if (!draft[field]) flag('faltaCampo', `falta ${field}`)
+  }
+  if (problems.length > 0) return { problems, warnings }
+
+  for (const field of SEO_FIELDS) {
+    const maxAllowed = d[field]?.maxChars
+    if (maxAllowed && draft[field].length > maxAllowed) {
+      flag(`largo:${field}`, `${field} tiene ${draft[field].length} caracteres y el máximo es ${maxAllowed}`)
     }
-    const minAllowed = d[campo]?.minChars
-    if (minAllowed && draft[campo].length < minAllowed) {
-      flag(`corto:${campo}`, `${campo} tiene ${draft[campo].length} caracteres y el mínimo es ${minAllowed}`)
+    const minAllowed = d[field]?.minChars
+    if (minAllowed && draft[field].length < minAllowed) {
+      flag(`corto:${field}`, `${field} tiene ${draft[field].length} caracteres y el mínimo es ${minAllowed}`)
     }
   }
 
@@ -204,13 +260,13 @@ export function validateDraft(draft, product, config, used = {}) {
   }
 
   // Nada de plantillas: dos productos no pueden compartir el mismo texto.
-  for (const campo of ['seoDescription', 'bodyHtml', 'feedDescription']) {
-    if (texts.has(`${campo}:${draft[campo]}`)) {
-      flag('textoDuplicado', `${campo} es idéntico al de otro producto; cada ficha tiene que ser distinta`)
+  for (const field of ['seoDescription', 'bodyHtml', 'feedDescription']) {
+    if (texts.has(`${field}:${draft[field]}`)) {
+      flag('textoDuplicado', `${field} es idéntico al de otro producto; cada ficha tiene que ser distinta`)
     }
   }
 
-  const todo = SEO_FIELDS.map((campo) => draft[campo]).join('\n')
+  const todo = SEO_FIELDS.map((field) => draft[field]).join('\n')
   for (const phrase of d.forbidPhrases ?? []) {
     if (todo.toLowerCase().includes(String(phrase).toLowerCase())) {
       flag('promocional', `sobra el lenguaje promocional "${phrase}": no va en la ficha ni en el feed`)
@@ -238,5 +294,5 @@ export function validateDraft(draft, product, config, used = {}) {
     }
   }
 
-  return problems
+  return { problems, warnings }
 }

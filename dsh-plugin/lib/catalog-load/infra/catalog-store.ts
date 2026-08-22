@@ -10,14 +10,14 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { resolveFromConfig } from '../../config.js'
+import { resolveFromConfig, type CatalogConfig } from '../../config.ts'
 
 /**
  * Dónde va el catálogo normalizado.
  * @param config - la configuración cargada.
  * @returns la ruta absoluta del JSON.
  */
-export function catalogPath(config) {
+export function catalogPath(config: CatalogConfig): string {
   return resolveFromConfig(config, config.output?.catalogJson ?? './.artifacts/catalog.json')
 }
 
@@ -27,7 +27,7 @@ export function catalogPath(config) {
  * @param catalog - el catálogo con sus productos y sus rechazos.
  * @returns la ruta donde ha quedado.
  */
-export function saveCatalog(config, catalog) {
+export function saveCatalog(config: CatalogConfig, catalog: unknown): string {
   const path = catalogPath(config)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')

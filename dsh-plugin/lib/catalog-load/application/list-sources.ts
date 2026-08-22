@@ -8,15 +8,15 @@
  * @module dsh-plugin-catalog-agent/catalog-load/application/list-sources
  */
 
-import { resolveFromConfig } from '../../config.js'
-import { listSources } from '../infra/csv-source.js'
+import { resolveFromConfig, type CatalogConfig } from '../../config.ts'
+import { listSources } from '../infra/csv-source.ts'
 
 /**
  * Las fuentes disponibles, con el catálogo habitual señalado.
  * @param dominio - la configuración cargada.
  * @returns las bandejas, los ficheros que hay en ellas y el habitual.
  */
-export function listCatalogSources(domainConfig) {
+export function listCatalogSources(domainConfig: CatalogConfig) {
   const { dirs, files } = listSources(domainConfig)
   return { dirs, files, defaultSource: resolveFromConfig(domainConfig, domainConfig.source.path) }
 }

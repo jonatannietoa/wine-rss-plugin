@@ -41,7 +41,7 @@ Estas dos cosas tienen que seguir siendo verdad después de cualquier cambio, y 
 
 ```bash
 # index.js no habla con el exterior ni tiene negocio
-grep -E "from 'node:fs'|ctx\.llm\.stream|validateDraft|buildCatalog" dsh-plugin/lib/index.js
+grep -E "from 'node:fs'|ctx\.llm\.stream|validateDraft|buildCatalog" dsh-plugin/lib/index.ts
 
 # el dominio no lee ni escribe nada
 grep -rE "from 'node:fs'|readFileSync|writeFileSync" dsh-plugin/lib/domain/ dsh-plugin/lib/*/domain/

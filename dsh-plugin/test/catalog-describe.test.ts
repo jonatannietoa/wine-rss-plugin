@@ -13,12 +13,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { loadConfig } from '../lib/config.js'
-import { buildCatalog } from '../lib/catalog-load/application/load-catalog.js'
-import { SEO_FIELDS, keywords, slugify, stripTags, validateDraft } from '../lib/catalog-describe/domain/seo-draft.js'
-import { parseBlocks } from '../lib/catalog-describe/infra/llm-adapter.js'
-import { buildPrompt } from '../lib/catalog-describe/application/describe-catalog.js'
-import { CONFIG, FIXTURE, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.js'
+import { loadConfig } from '../lib/config.ts'
+import { buildCatalog } from '../lib/catalog-load/application/load-catalog.ts'
+import { SEO_FIELDS, keywords, slugify, stripTags, validateDraft, type SeoDraft } from '../lib/catalog-describe/domain/seo-draft.ts'
+import { parseBlocks } from '../lib/catalog-describe/infra/llm-adapter.ts'
+import { buildPrompt } from '../lib/catalog-describe/application/describe-catalog.ts'
+import { CONFIG, FIXTURE, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.ts'
 
 const config = loadConfig(CONFIG)
 const { catalog } = buildCatalog(config, { path: FIXTURE })
@@ -48,11 +48,18 @@ const enBloques = (draft) => SEO_FIELDS.map((campo) => `### ${campo}\n${draft[ca
 
 /** Los mensajes de los problemas, que es lo que se le devuelve al modelo. */
 const problems = (draft, product = TINTO, used = {}) =>
-  validateDraft(draft, product, config, used).map((x) => x.message)
+  validateDraft(draft, product, config, used).problems.map((x) => x.message)
+
+/** Los mensajes de los avisos: reglas blandas, que no tumban la ficha. */
+const avisos = (draft: SeoDraft, product = TINTO, used = {}) =>
+  validateDraft(draft, product, config, used).warnings.map((x) => x.message)
+
+/** La configuración sin reglas blandas, para probar que sin ellas sí tumban. */
+const sinBlandas = { ...config, description: { ...config.description, softRules: [] } }
 
 /** Los códigos de los problemas, que es con lo que se cuenta qué regla rechaza. */
 const codes = (draft, product = TINTO, used = {}) =>
-  validateDraft(draft, product, config, used).map((x) => x.code)
+  validateDraft(draft, product, config, used).problems.map((x) => x.code)
 
 test('el borrador de referencia pasa todas las reglas', () => {
   assert.deepEqual(problems(VALIDO), [])
@@ -148,7 +155,8 @@ test('exige los seis campos', () => {
 
 test('respeta las longitudes de cada campo', () => {
   assert.match(problems(con({ seoTitle: 'x'.repeat(61) }))[0], /seoTitle tiene 61 caracteres/)
-  assert.match(problems(con({ seoDescription: 'corta' }))[0], /mínimo es 70/)
+  // El mínimo de seoDescription es blando: avisa, no tumba.
+  assert.match(avisos(con({ seoDescription: 'corta' }))[0], /mínimo es 70/)
   assert.match(problems(con({ altText: 'x'.repeat(126) }))[0], /altText tiene 126/)
 })
 
@@ -166,14 +174,20 @@ test('el cuerpo tiene que poder escanearse: párrafo y luego bullets', () => {
   assert.match(problems(con({ bodyHtml: dosBullets }))[0], /hay 2 bullets/)
 })
 
-test('rechaza el párrafo de entrada demasiado largo', () => {
+test('avisa del párrafo de entrada demasiado largo, sin tumbar la ficha', () => {
   const largo = `<p>Un vino tinto ${'word '.repeat(40)}.</p><ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>`
-  assert.match(problems(con({ bodyHtml: largo })).join(' '), /palabras y el máximo es 40/)
+  // Es blando en producción: el modelo se pasa por 2-4 palabras, y rehacer la
+  // ficha entera por eso cuesta una llamada completa.
+  assert.match(avisos(con({ bodyHtml: largo })).join(' '), /palabras y el máximo es 40/)
+  // Declarada dura, sí tumba.
+  const dura = validateDraft(con({ bodyHtml: largo }), TINTO, sinBlandas, {})
+  assert.ok(dura.problems.some((x) => x.code === 'entradaLarga'))
 })
 
 test('rechaza un bullet kilométrico y las etiquetas no permitidas', () => {
   const bullet = `<p>Un vino tinto de Rioja.</p><ul><li>${'x'.repeat(91)}</li><li>Dos</li><li>Tres</li></ul>`
-  assert.match(problems(con({ bodyHtml: bullet })).join(' '), /91 caracteres y el máximo es 90/)
+  // El largo del bullet es blando; la etiqueta prohibida no.
+  assert.match(avisos(con({ bodyHtml: bullet })).join(' '), /91 caracteres y el máximo es 90/)
   const script = '<p>Un vino tinto de Rioja.</p><script>alert(1)</script><ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>'
   assert.match(problems(con({ bodyHtml: script })).join(' '), /<script>, que no está permitida/)
 })
@@ -442,18 +456,16 @@ test('dos fichas del mismo lote no pueden salir con el mismo handle', async () =
 })
 
 test('el recuento de rechazos dice qué regla cuesta las llamadas', async () => {
-  // Falla dos veces por el párrafo de entrada y acierta a la tercera.
-  const largo = enBloques(con({
-    bodyHtml: `<p>Un vino tinto ${'word '.repeat(45)}</p><ul><li>Uno</li><li>Dos</li><li>Tres</li></ul>`,
-  }))
+  // Con una regla DURA: el título largo sí tumba, y por eso reintenta.
+  const largo = enBloques(con({ seoTitle: 'x'.repeat(80) }))
   const { tools } = await conCatalogoCargado(llmSimulado([largo, largo, enBloques(VALIDO)]).llm)
   const result = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
 
   assert.equal(result.written, 1)
   assert.equal(result.averageAttempts, 3)
   assert.equal(result.calls, 3)
-  const entradaLarga = result.rejections.find((r) => r.code === 'entradaLarga')
-  assert.equal(entradaLarga.count, 2, 'las dos veces que rechazó, contadas')
+  const titulo = result.rejections.find((r) => r.code === 'largo:seoTitle')
+  assert.equal(titulo.count, 2, 'las dos veces que rechazó, contadas')
 })
 
 test('la tienda puede redactar con un modelo distinto al de la sesión', async () => {
@@ -583,6 +595,76 @@ test('catalog_seo devuelve las fichas guardadas para poder leerlas', async () =>
   const text = leer.output.render({}, todo)[0].text
   assert.match(text, /SIN revisar/)
   assert.match(text, /bodyHtml/)
+})
+
+test('una regla blanda avisa en vez de tumbar la ficha', () => {
+  // Medido con el razonamiento apagado: el modelo se pasa de los topes por 1-5
+  // caracteres, y rehacer la ficha entera por eso cuesta una llamada completa.
+  const largo = con({
+    bodyHtml: `<p>Un vino tinto de Rioja con barrica.</p><ul><li>${'x'.repeat(91)}</li><li>Dos</li><li>Tres</li></ul>`,
+  })
+  const review = validateDraft(largo, TINTO, config, {})
+  assert.deepEqual(review.problems, [], 'no la tumba')
+  assert.deepEqual(review.warnings.map((x) => x.code), ['bulletLargo'], 'pero lo anota')
+
+  // Sin declararla blanda, sigue tumbándola.
+  const dura = validateDraft(largo, TINTO, sinBlandas, {})
+  assert.ok(dura.problems.some((x) => x.code === 'bulletLargo'))
+})
+
+test('lo que nunca es blando sigue tumbando la ficha', () => {
+  // Aunque alguien lo meta en softRules por error, un dato inventado no pasa.
+  const inventado = con({ seoTitle: 'Ejemplo Tinto Crianza 2019' })
+  const review = validateDraft(inventado, TINTO, config, {})
+  assert.ok(review.problems.some((x) => x.code === 'inventado'), review.problems.map((x) => x.code).join(', '))
+})
+
+test('la ficha guarda los avisos blandos, para quien la revise', async () => {
+  const bullet = 'x'.repeat(91)
+  const largo = enBloques(con({
+    bodyHtml: `<p>Un vino tinto de Rioja con barrica.</p><ul><li>${bullet}</li><li>Dos</li><li>Tres</li></ul>`,
+  }))
+  const { tools } = await conCatalogoCargado(llmSimulado([largo]).llm, (c) => {
+    c.description.softRules = ['bulletLargo']
+    c.description.probeFirst = 'never'
+  })
+  const result = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  assert.equal(result.written, 1)
+  assert.equal(result.calls, 1, 'una sola llamada, no tres')
+  assert.deepEqual(result.sample[0].warnings.map((x) => x.code), ['bulletLargo'])
+})
+
+test('callsPerProduct no esconde el trabajo perdido', async () => {
+  // Un modelo que nunca acierta: 3 intentos y 0 fichas.
+  const malo = enBloques(con({ handle: 'MAL HANDLE' }))
+  const { tools } = await conCatalogoCargado(llmSimulado([malo, malo, malo]).llm, (c) => {
+    c.description.probeFirst = 'never'
+  })
+  const result = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  assert.equal(result.written, 0)
+  assert.equal(result.averageAttempts, 0, 'no hay fichas escritas que promediar')
+  assert.equal(result.callsPerProduct, 3, 'pero las 3 llamadas se ven')
+})
+
+test('con regenerate always los lotes avanzan en vez de repetirse', async () => {
+  const drafts = ['a', 'b', 'c', 'd'].map((s) => enBloques(con({
+    handle: `avanza-${s}`,
+    seoDescription: `${VALIDO.seoDescription} Variante ${s} para que no se repita el texto.`,
+    bodyHtml: VALIDO.bodyHtml.replace('barrica', `barrica ${s}`),
+    feedDescription: `${VALIDO.feedDescription} Variante ${s}.`,
+  })))
+  const { tools, configPath } = await conCatalogoCargado(llmSimulado(drafts).llm, (c) => {
+    c.description.probeFirst = 'never'
+  })
+
+  const primero = await tools.catalog_describe.execute({ limit: 2, regenerate: 'always' }, ejecucion())
+  const { catalog_describe: otra } = registrar(configPath, llmSimulado(drafts.slice(2)).llm)
+  const segundo = await otra.execute({ limit: 2, regenerate: 'always' }, ejecucion())
+
+  const skusPrimero = primero.sample.map((f) => f.sku)
+  const skusSegundo = segundo.sample.map((f) => f.sku)
+  assert.notDeepEqual(skusPrimero, skusSegundo, `el segundo lote repitió: ${skusSegundo.join(', ')}`)
+  assert.ok(segundo.pending < primero.pending, `pendientes no bajó: ${primero.pending} → ${segundo.pending}`)
 })
 
 test('catalog_review es lo que convierte una ficha en publicable', async () => {

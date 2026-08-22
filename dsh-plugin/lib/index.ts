@@ -23,12 +23,12 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { loadConfig } from './config.js'
-import { DRAFT_SCHEMA, PRODUCT_SCHEMA, nullable, tally } from './schemas.js'
-import { loadCatalog } from './catalog-load/application/load-catalog.js'
-import { listCatalogSources } from './catalog-load/application/list-sources.js'
-import { describeCatalog } from './catalog-describe/application/describe-catalog.js'
-import { readSeo, reviewCatalog } from './catalog-review/application/review-catalog.js'
+import { loadConfig } from './config.ts'
+import { DRAFT_SCHEMA, PRODUCT_SCHEMA, nullable, tally } from './schemas.ts'
+import { loadCatalog } from './catalog-load/application/load-catalog.ts'
+import { listCatalogSources } from './catalog-load/application/list-sources.ts'
+import { describeCatalog } from './catalog-describe/application/describe-catalog.ts'
+import { readSeo, reviewCatalog } from './catalog-review/application/review-catalog.ts'
 
 export const name = 'catalog-agent'
 // `llm` es el modelo de la sesión: `catalog_describe` redacta con el que el
@@ -331,6 +331,11 @@ export function apply(ctx, config) {
             required: true,
             description: 'Si el primer producto se ha redactado solo antes de paralelizar el resto.',
           },
+          callsPerProduct: {
+            type: 'number',
+            required: true,
+            description: 'Llamadas al modelo por producto intentado, contando los que fallaron. Es el número honesto de lo que cuesta el lote.',
+          },
           averageAttempts: {
             type: 'number',
             required: true,
@@ -389,7 +394,7 @@ export function apply(ctx, config) {
           `${value.written} de ${value.requested} fichas escritas con ${value.model}`
           + ` en ${value.seconds}s`
           + ` y ${value.calls} ${value.calls === 1 ? 'llamada' : 'calls'} al modelo`
-          + `${value.averageAttempts > 0 ? ` (${value.averageAttempts} intentos por ficha)` : ''}.`
+          + `${value.callsPerProduct > 0 ? ` (${value.callsPerProduct} llamadas por producto intentado)` : ''}.`
           + `${value.failed > 0 ? ` ${value.failed} no pasaron la validación.` : ''}`,
           `Cada llamada tarda ${value.secondsPerCall}s de media con razonamiento "${value.effort}":`
           + ' eso es latencia del proveedor y no baja paralelizando.'

@@ -20,29 +20,30 @@ infraestructura y su carpeta de aplicación, y un único dominio compartido.
 
 ```
 dsh-plugin/lib/
-├── index.js                       adaptador primario: defineTool ×5, cero negocio
-├── config.js                      cargar catalog.config.yml y resolver sus rutas
-├── schemas.js                     esquemas de salida compartidos
+├── index.ts                       adaptador primario: defineTool ×5, cero negocio
+├── config.ts                      cargar catalog.config.yml y resolver sus rutas (CatalogConfig)
+├── schemas.ts                     esquemas de salida compartidos
+├── errors.ts                      lo único que estrecha el `unknown` de un catch
 │
 ├── domain/
-│   └── product.js                 el ÚNICO dominio compartido entre tools
+│   └── product.ts                 el ÚNICO dominio compartido entre tools
 │
 ├── catalog-load/                  etapas 1 y 2: ingesta y normalización
-│   ├── infra/csv-source.js        entra: el CSV y las bandejas de entrada
-│   ├── infra/catalog-store.js     sale: catalog.json
+│   ├── infra/csv-source.ts        entra: el CSV y las bandejas de entrada
+│   ├── infra/catalog-store.ts     sale: catalog.json
 │   └── application/
-│       ├── load-catalog.js        orquesta: filas → dominio → JSON
-│       └── list-sources.js        qué ficheros hay para cargar
+│       ├── load-catalog.ts        orquesta: filas → dominio → JSON
+│       └── list-sources.ts        qué ficheros hay para cargar
 │
 ├── catalog-describe/              etapa 3: textos SEO
-│   ├── domain/seo-draft.js        su dominio propio: qué es una ficha válida
-│   ├── infra/llm-adapter.js       entra/sale: el modelo y el parseo de su respuesta
-│   ├── infra/catalog-reader.js    entra: el catálogo de la etapa 2
-│   ├── infra/seo-store.js         sale: catalog-seo.json
-│   └── application/describe-catalog.js   prompt → modelo → valida → reintenta
+│   ├── domain/seo-draft.ts        su dominio propio: qué es una ficha válida
+│   ├── infra/llm-adapter.ts       entra/sale: el modelo y el parseo de su respuesta
+│   ├── infra/catalog-reader.ts    entra: el catálogo de la etapa 2
+│   ├── infra/seo-store.ts         sale: catalog-seo.json
+│   └── application/describe-catalog.ts   prompt → modelo → valida → reintenta
 │
 └── catalog-review/                la puerta de revisión humana
-    └── application/review-catalog.js    leer fichas y aprobarlas
+    └── application/review-catalog.ts    leer fichas y aprobarlas
 ```
 
 ## Las tres capas, y qué va en cada una
@@ -87,14 +88,40 @@ Es el reparto menos obvio, y sirve de plantilla para las etapas 4 y 5:
 
 El bucle de reintentos y validación de la etapa 3 se ejercita con un `llm-adapter` falso, **sin
 arrancar dsh y sin llamar a ningún modelo real**. Es lo que hacen los tests de
-`test/catalog-describe.test.js`: se le dan al doble del modelo respuestas preparadas —una vacía, una
+`test/catalog-describe.test.ts`: se le dan al doble del modelo respuestas preparadas —una vacía, una
 truncada, una que incumple una regla— y se comprueba que el lote reacciona como debe.
 
-## Idioma
+## Lenguaje e idioma
+
+**TypeScript, sin paso de compilación.** Node hace *type stripping* y ejecuta los `.ts` tal cual, así
+que no hay `dist/` ni build que olvidar. `tsc --noEmit` es solo el comprobador de tipos, y `dsh.sh`
+lo ejecuta como paso propio.
+
+Dos consecuencias que hay que respetar:
+
+- **Los imports relativos llevan la extensión real** (`from './schemas.ts'`), porque en ejecución los
+  resuelve Node y no un bundler. De ahí `allowImportingTsExtensions` en `tsconfig.json`.
+- **El plugin tiene que quedarse enlazado, no copiado.** Node se niega a hacer type stripping bajo
+  `node_modules` (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), y funciona solo porque
+  `dsh plugin add` monta un symlink al repo y Node resuelve el enlace al path real antes de decidir.
+  Si algún día el plugin se instalara desde un tarball, dejaría de arrancar.
+
+`tsconfig.json` lleva `erasableSyntaxOnly`: rechaza en compilación lo que el stripping no sabe
+borrar (`enum`, `namespace`, propiedades de parámetro). Sin eso, `tsc` aprobaría código que revienta
+al ejecutar.
+
+Y el tipado no es decorativo: `defineTool` es genérico sobre el esquema de parámetros y el de salida,
+así que `execute` está **obligado** a devolver exactamente lo que declara `output.schema`.
+`test/typing.ts` lo fija con un `@ts-expect-error`: si alguien desconecta ese cableado, `tsc` falla
+con «Unused '@ts-expect-error' directive».
+
+### Idioma
 
 - **Código en inglés**: nombres de funciones, variables, parámetros y **claves de las salidas**.
 - **Comentarios y documentación en castellano**, incluida esta página y el README.
 - **Los mensajes que ve el usuario, en castellano**: son producto, no código.
+- **Los códigos de regla se quedan como están** (`sinFormato`, `bulletLargo`): son datos de salida
+  con historia en los logs, y renombrarlos rompería la comparación con las medidas anteriores.
 
 ## Al añadir las etapas 4 y 5
 
@@ -102,15 +129,15 @@ Cada una es su propio hexágono, siguiendo el mismo molde:
 
 ```
 catalog-image/                     etapa 4
-├── infra/image-search.js          entra: el proveedor de búsqueda
-├── infra/image-generator.js       entra: el proveedor de generación
-├── infra/image-store.js           sale: los ficheros en disco
-└── application/describe-image.js  política: buscar primero, generar si no hay
+├── infra/image-search.ts          entra: el proveedor de búsqueda
+├── infra/image-generator.ts       entra: el proveedor de generación
+├── infra/image-store.ts           sale: los ficheros en disco
+└── application/describe-image.ts  política: buscar primero, generar si no hay
 
 catalog-publish/                   etapa 5
-├── infra/shopify-client.js        entra/sale: la Admin API
-├── infra/publish-log.js           sale: qué se publicó y cuándo
-└── application/publish-catalog.js política: dryRun, lotes, qué campos se escriben
+├── infra/shopify-client.ts        entra/sale: la Admin API
+├── infra/publish-log.ts           sale: qué se publicó y cuándo
+└── application/publish-catalog.ts política: dryRun, lotes, qué campos se escriben
 ```
 
 Lo que **no** hay que hacer: meter el cliente de Shopify en `domain/`, ni la política de `dryRun` en

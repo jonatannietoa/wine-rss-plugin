@@ -1,0 +1,28 @@
+// El plugin NO se compila: Node 26 hace type stripping y ejecuta los .ts tal cual.
+// Esto es solo el comprobador de tipos, de ahí `noEmit`.
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+
+    // Los imports apuntan al fichero real (`./schemas.ts`) porque en ejecución
+    // los resuelve Node, no un bundler.
+    "allowImportingTsExtensions": true,
+
+    // Rechaza en compilación lo que el stripping de Node no sabe borrar: enum,
+    // namespace, propiedades de parámetro. Sin esto tsc aprobaría código que
+    // revienta al ejecutar.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
+    "skipLibCheck": true
+  },
+  "include": ["lib/**/*.ts", "test/**/*.ts"]
+}

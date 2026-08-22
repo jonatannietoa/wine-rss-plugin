@@ -3,6 +3,10 @@
 Versión de la aplicación: `dsh-plugin/package.json`. Reglas de subida:
 `.agent/rules/version-bump.md`.
 
+- 1.1.0 — Migración a TypeScript (sin paso de compilación: Node hace type stripping) y
+  reglas blandas: con el razonamiento apagado el modelo se pasa de los topes por 1-5
+  caracteres, y ahora eso avisa en vez de tirar la ficha. `callsPerProduct` no esconde el
+  trabajo perdido, y `regenerate: always` por lotes ya avanza en vez de repetirse.
 - 1.0.0 — Código en inglés, prosa en castellano. **Rompe el contrato**: las claves de las
   salidas de las cinco tools se renombran (`intentosMedios` → `averageAttempts`, etc.).
   `ARCHITECTURE.md` documenta la arquitectura y una regla nueva obliga a mantenerlo.

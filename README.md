@@ -334,24 +334,22 @@ para no inventar, pero no están priorizadas por demanda de búsqueda.
 
 ### Cuánto tarda, y qué mirar si tarda demasiado
 
-El lote se redacta **en paralelo**, en trozos de `description.concurrency` (4 por defecto).
+El lote se redacta **en paralelo**, en trozos de `description.concurrency` (4 por defecto). Medido
+sobre el mismo lote de 4 productos: **204 s** en serie → **97 s** con paralelismo → **~32 s**
+saltando la sonda, todo con `reasoningEffort: high`.
 
-Medido sobre el mismo lote de 4 productos: **204 s** en serie → **97 s** con paralelismo → **~32 s**
-saltando la sonda. El suelo son 32 s, y es la latencia de una llamada.
+El tiempo de pared es, aproximadamente, `secondsPerCall` × (rondas secuenciales), y las rondas son:
+la sonda si la hay, más el peor número de intentos de cada trozo paralelo. De ahí salen las cuatro
+palancas, de más a menos efecto:
 
-Cuatro números del resumen dicen si queda algo que rascar:
-
-| | Qué significa |
+| Palanca | Qué da |
 |---|---|
-| `seconds` | Lo que ha tardado de pared |
-| `secondsPerCall` | **El suelo.** Es latencia del proveedor: no baja paralelizando, solo con otro modelo |
-| `averageAttempts` | Cerca de 1 es lo bueno. Cada intento de más alarga la ronda entera, porque los reintentos de un producto son secuenciales |
-| `peakReasoningChars` | Caracteres que gastó razonando la llamada que más razonó. Si se acerca a `maxTokens` × 3, el presupuesto va al filo y volverán las respuestas vacías |
-| `rejections` | Qué regla ha rechazado borradores y cuántas veces. Es lo único que dice qué ajustar |
+| `reasoningEffort` | **La grande.** De 57,9 s a 4,1 s por llamada. Tiene su propia sección: [El esfuerzo de razonamiento](#el-esfuerzo-de-razonamiento-el-ab-medido) |
+| `softRules` | Deja de gastar una llamada entera por pasarse de un tope por un carácter |
+| `probeFirst: auto` | Se salta la sonda cuando ya hay prueba de que el modelo funciona: una ronda menos |
+| `concurrency` | Irrelevante con 4 productos, decisivo con 793 |
 
-El tiempo de pared es, aproximadamente, `secondsPerCall` × (rondas secuenciales), y las rondas
-son: la sonda si la hay, más el peor número de intentos de cada trozo paralelo. De ahí salen las tres
-palancas: quitar la sonda, bajar los intentos, y subir `concurrency` cuando el lote es grande.
+Los números para decidir están en [Los números del resumen](#los-números-del-resumen).
 
 ### La sonda del primer producto
 
@@ -471,31 +469,33 @@ Dos redes para que esto no vuelva a costar una sesión: `./dsh.sh` comprueba qu�
 adaptador resuelto y **para el despliegue** si la configuración pide otro; y si aun así el proveedor
 lo rechaza en caliente, el error dice de dónde sale el valor y cuáles valen.
 
-### Medir un esfuerzo contra otro
+### El esfuerzo de razonamiento: el A/B, medido
 
-`off` apaga el razonamiento del todo. Para la prosa no hace falta, pero buena parte de los rechazos
-son de **contar** caracteres, palabras y repeticiones, y ahí un borrador mental sí ayuda. Así que el
-efecto neto no se predice: `off` baja la latencia por llamada y puede subir los reintentos, y cada
-reintento es una llamada entera.
+`reasoningEffort` decide si el modelo razona antes de escribir. Suena a detalle y es **la variable
+que más manda** en esta etapa: cambia el tiempo por llamada en un factor de 14.
 
-Medido en llamadas reales, segundos por llamada al modelo:
+Medido con `deepseek-v4-flash` sobre el mismo fichero de 11 productos:
 
-| Esfuerzo | Medidas | Media |
-|---|---|---|
-| `low` | 21,4 · 27,0 · 32,4 | **26,9 s** |
-| `high` | 54,9 · 33,9 · 84,9 | **57,9 s** |
-| `off` | — | lo que mida la próxima carga |
+| esfuerzo | s/llamada | llamadas por producto | fichas escritas | s por ficha escrita |
+|---|---|---|---|---|
+| `high` | 57,9 | 1,4 | 11/11 · 4/4 | **78** |
+| `low` | 26,9 | 1,5 | 4/4 | 40 |
+| `off` | **4,1** | 3,0 | 2/4 · 3/4 · 1/4 | **12-24** |
 
-`high` cuesta más del doble que `low`, y `low` no es utilizable porque su disponibilidad depende de
-qué adaptador resolviera npm. Por eso el defecto está en **`off`**: es la comparación que falta, y la
-próxima carga normal la cierra sin tener que pasar parámetros a mano.
+**Qué significa cada columna.** `s/llamada` es latencia del proveedor y **no baja paralelizando**:
+es el suelo. `llamadas por producto` sube cuando el modelo incumple una regla y hay que reintentar,
+y cada reintento es una llamada entera. La última columna es la que decide, porque un modelo rápido
+que falla la mitad puede salir más caro que uno lento que acierta.
 
-Si las fichas salen planas, o si suben los rechazos de longitud (`entradaLarga`, `largo:seoTitle`,
-`bulletLargo` — contar caracteres es justo donde un borrador mental ayuda), se vuelve a `high` en una
-línea. Nada se publica sin revisar, así que el experimento no tiene coste de producto.
+**El resultado y su explicación.** Sin razonamiento el modelo **escribe igual de bien pero no sabe
+contar**: todos sus fallos eran de longitud, y se pasaba de los topes por 1-5 caracteres. Con
+razonamiento acierta a la primera pero cada llamada cuesta 14 veces más.
 
-El parámetro `reasoningEffort` de `catalog_describe` pisa la configuración solo en esa llamada, si
-quieres comparar dos sobre los mismos productos en la misma sesión:
+Por eso el defecto es **`off` con reglas blandas** (ver abajo): se queda con los 4 segundos y se
+deja de tirar fichas por un carácter.
+
+Si aun así hace falta razonamiento, el parámetro `reasoningEffort` de `catalog_describe` pisa la
+configuración solo en esa llamada, para poder comparar sobre los mismos productos:
 
 ```
 catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "off")
@@ -503,8 +503,51 @@ catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "high")
 catalog_seo(limit: 4)     # y leer las fichas de cada uno
 ```
 
-Se comparan `secondsPerCall`, `averageAttempts` y `rejections`, que el resumen ya trae, y el propio
-resumen dice con qué `effort` se hizo cada lote.
+Los dos parámetros son necesarios: sin `regenerate: "always"` no rehace nada porque ya tienen ficha.
+
+### Reglas duras y reglas blandas
+
+De los límites de longitud, **solo el de `seoTitle` es una restricción real** —el buscador recorta a
+unos 60 caracteres—. Los demás los elegimos nosotros con criterio, no con evidencia. Así que tirar
+una ficha entera y gastar otra llamada porque un bullet tiene 91 caracteres en vez de 90 es un mal
+negocio.
+
+`description.softRules` lista los códigos que **avisan en vez de tumbar**. Lo que se pasa de un
+límite blando queda en el campo `warnings` de la ficha, así que quien la revise lo ve:
+
+```yaml
+description:
+  softRules:
+    - bulletLargo
+    - entradaLarga
+    - largo:seoDescription
+    - largo:feedDescription
+    - largo:bodyHtml
+    - corto:seoDescription
+```
+
+**Lo que nunca debe ser blando**, y por qué:
+
+| Código | Por qué tumba la ficha |
+|---|---|
+| `inventado` | Una añada, una graduación o un premio que el fichero no dice. Publicarlo es mentir |
+| `promocional` | Google Merchant Center rechaza el relleno promocional en los feeds |
+| `stuffing` | Repetir la keyword penaliza en buscador |
+| `handleInvalido`, `handleDuplicado` | Un handle roto o repetido rompe la URL del producto |
+| `textoDuplicado` | Dos fichas con el mismo texto es contenido duplicado |
+| `largo:seoTitle` | Lo recorta el buscador: no es criterio nuestro |
+| `faltaCampo`, `sinBloques` | Sin los seis campos no hay ficha |
+
+### Los números del resumen
+
+| | Qué mirar |
+|---|---|
+| `seconds` | Lo que ha tardado el lote de pared |
+| `secondsPerCall` | El suelo. Latencia del proveedor: solo baja con otro modelo |
+| `callsPerProduct` | **El número honesto**: llamadas por producto intentado, contando los que fallaron |
+| `averageAttempts` | Intentos por ficha *escrita*. Útil, pero esconde el trabajo perdido: mira el de arriba |
+| `peakReasoningChars` | Lo que razonó la llamada que más razonó. Si se acerca a `maxTokens` × 3, el presupuesto va al filo |
+| `rejections` | Qué regla ha tumbado borradores y cuántas veces |
 
 ### Nada se publica sin revisar
 
@@ -671,7 +714,7 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 ├── dsh-plugin/               # el plugin nativo de dsh
 │   ├── package.json          # nombre, versión y dependencias del harness
 │   ├── lib/                   # un hexágono por tool (ver abajo)
-│   └── test/                 # 80 tests con `node --test`, sin claves ni red
+│   └── test/                 # 85 tests con `node --test`, sin claves ni red
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
 ├── dsh.sh                    # despliega el plugin y arranca dsh, con sus comprobaciones
@@ -735,7 +778,7 @@ anonimizado. No hacen falta claves ni red:
 cd dsh-plugin && npm test          # node --test "test/*.test.js"
 ```
 
-Los 80 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
+Los 85 tests van uno por regla. De la normalización: las cinco maneras de escribir el formato del
 envase, los precios con `€` y coma decimal, el separador de millares, las fechas `d/m/aaaa`, las
 cuatro causas de rechazo, la capitalización con palabras llanas, la taxonomía y los tags. **Si un
 cliente nuevo trae una rareza más, se añade una fila a `catalogo.example.csv` y su test aquí.**

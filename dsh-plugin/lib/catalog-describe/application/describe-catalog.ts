@@ -11,10 +11,10 @@
  * @module dsh-plugin-catalog-agent/catalog-describe/application/describe-catalog
  */
 
-import { FIELD_ROLES, SEO_FIELDS, keywords, readable, validateDraft } from '../domain/seo-draft.js'
-import { parseBlocks, requestDraft } from '../infra/llm-adapter.js'
-import { readCatalog } from '../infra/catalog-reader.js'
-import { loadDrafts, saveDrafts, draftsPath } from '../infra/seo-store.js'
+import { FIELD_ROLES, SEO_FIELDS, keywords, readable, validateDraft } from '../domain/seo-draft.ts'
+import { parseBlocks, requestDraft } from '../infra/llm-adapter.ts'
+import { readCatalog } from '../infra/catalog-reader.ts'
+import { loadDrafts, saveDrafts, draftsPath } from '../infra/seo-store.ts'
 
 /** Los datos del producto que el modelo puede ver, y ninguno más. */
 function visibleFields(product, config) {
@@ -160,8 +160,9 @@ async function writeDraft(ctx, model, product, domainConfig, used, signal, initi
   let diagnostico = null
   // Los códigos de todo lo que se rechazó por el camino, aunque al final salga
   // bien: es lo único que dice qué regla está costando llamadas.
-  const rejections = []
-  const durations = []
+  const rejections: string[] = []
+  const softened: string[] = []
+  const durations: number[] = []
   // El pico de razonamiento del lote: es lo que dice si `maxTokens` va holgado o
   // al filo, y hasta ahora solo se veía en los fallos definitivos.
   let peakReasoningChars = 0
@@ -212,8 +213,10 @@ async function writeDraft(ctx, model, product, domainConfig, used, signal, initi
     }
     algunBloque = true
 
-    problems = validateDraft(draft, product, domainConfig, used)
+    const review = validateDraft(draft, product, domainConfig, used)
+    problems = review.problems
     rejections.push(...problems.map((x) => x.code))
+    softened.push(...review.warnings.map((x) => x.code))
     if (problems.length === 0) {
       return {
         draft: {
@@ -223,6 +226,9 @@ async function writeDraft(ctx, model, product, domainConfig, used, signal, initi
           generatedAt: new Date().toISOString(),
           model: `${model.provider}/${model.model}`,
           attempts: attempt,
+          // Lo que se pasó de un límite blando. La ficha se publica, pero quien
+          // la revise tiene que poder verlo.
+          warnings: review.warnings,
         },
         rejections,
         durations,
@@ -292,11 +298,22 @@ export async function describeCatalog(ctx, domainConfig, args, exec, plugin) {
   const storePath = draftsPath(domainConfig)
   const drafts = loadDrafts(storePath)
 
-  const politica = args.regenerate ?? domainConfig.description?.regenerate ?? 'missing'
-  if (politica === 'never') {
+  const policy = args.regenerate ?? domainConfig.description?.regenerate ?? 'missing'
+  if (policy === 'never') {
     throw new Error('la configuración dice `description.regenerate: never`: no se escribe ninguna ficha')
   }
-  const pending = catalog.items.filter((item) => politica === 'always' || !drafts[item.sku])
+  // Con `always` no basta «no tiene ficha»: entonces TODOS están pendientes y
+  // `limit` coge siempre los cuatro primeros, así que los lotes no avanzan
+  // nunca. Pendiente es «no tiene ficha, o la que tiene es de antes de esta
+  // carga del catálogo»: rehacerla la saca de la lista y el lote siguiente
+  // continúa por donde iba. Una carga nueva vuelve a marcarlas todas.
+  const loadedAt = catalog.generatedAt ?? ''
+  const stale = (sku: string): boolean => {
+    const previous = drafts[sku]
+    if (!previous) return true
+    return policy === 'always' && previous.generatedAt < loadedAt
+  }
+  const pending = catalog.items.filter((item) => stale(item.sku))
 
   let targets
   const requestedSkus = [...(args.sku ? [args.sku.trim()] : []), ...(args.skus ?? []).map((s) => String(s).trim())]
@@ -346,6 +363,7 @@ export async function describeCatalog(ctx, domainConfig, args, exec, plugin) {
       effort: args.reasoningEffort?.trim() || domainConfig.description?.reasoningEffort || 'high',
       maxTokens: domainConfig.description?.maxTokens ?? 16000,
       probed: false,
+      callsPerProduct: 0,
       averageAttempts: 0,
       rejections: [],
       pending: pending.length,
@@ -490,6 +508,12 @@ export async function describeCatalog(ctx, domainConfig, args, exec, plugin) {
     effort: effort ?? domainConfig.description?.reasoningEffort ?? 'high',
     maxTokens: domainConfig.description?.maxTokens ?? 16000,
     probed: probe,
+    // Sobre TODOS los productos intentados, no solo los escritos: promediando
+    // solo los que salieron bien, una tanda de 10 llamadas con 1 ficha y 3
+    // fallos dice «1 intento por ficha» y esconde las 9 llamadas perdidas.
+    callsPerProduct: targets.length === 0
+      ? 0
+      : Math.round((calls / targets.length) * 100) / 100,
     averageAttempts: written.length === 0
       ? 0
       : Math.round((written.reduce((suma, f) => suma + f.attempts, 0) / written.length) * 100) / 100,

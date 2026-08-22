@@ -231,6 +231,25 @@ description:
   # en el cuerpo de la ficha.
   maxKeywordRepeats: 3
 
+  # Reglas que solo AVISAN en vez de tumbar la ficha.
+  #
+  # Medido con `reasoningEffort: off`: el modelo escribe bien pero no cuenta, y se
+  # pasa de los topes por 1-5 caracteres. Rehacer la ficha entera por un bullet de
+  # 91 caracteres cuesta una llamada completa, y de estos límites solo el de
+  # `seoTitle` es una restricción real (el buscador recorta a ~60): los demás los
+  # elegimos nosotros. Lo que se pasa de un límite blando queda en `warnings` de
+  # la ficha, así que quien la revise lo ve.
+  #
+  # NO metas aquí `inventado`, `promocional`, `stuffing`, `handleInvalido`,
+  # `handleDuplicado` ni `textoDuplicado`: esos sí son motivo para tirar la ficha.
+  softRules:
+    - bulletLargo
+    - entradaLarga
+    - largo:seoDescription
+    - largo:feedDescription
+    - largo:bodyHtml
+    - corto:seoDescription
+
   # ── La llamada al modelo ───────────────────────────────────────────────────
   # Redactar una ficha no necesita razonamiento alto, y ponerlo alto es
   # contraproducente: el modelo se gasta el presupuesto de salida pensando y no

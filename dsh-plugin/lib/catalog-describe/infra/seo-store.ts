@@ -10,11 +10,12 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { resolveFromConfig } from '../../config.js'
+import { resolveFromConfig, type CatalogConfig } from '../../config.ts'
+import type { StoredDraft } from '../domain/seo-draft.ts'
+import { messageOf } from '../../errors.ts'
 
 /** Resuelve la ruta del almacén SEO declarada en la configuración. */
-export
-const draftsPath = (domainConfig) =>
+export const draftsPath = (domainConfig: CatalogConfig): string =>
   resolveFromConfig(domainConfig, domainConfig.output?.seoJson ?? './.artifacts/catalog-seo.json')
 
 /**
@@ -22,14 +23,13 @@ const draftsPath = (domainConfig) =>
  * @param path - ruta del JSON.
  * @returns las fichas indexadas por SKU.
  */
-export
-function loadDrafts(path) {
+export function loadDrafts(path: string): Record<string, StoredDraft> {
   if (!existsSync(path)) return {}
   let data
   try {
     data = JSON.parse(readFileSync(path, 'utf8'))
   } catch (error) {
-    throw new Error(`no se pudo leer ${path}: ${error.message}`)
+    throw new Error(`no se pudo leer ${path}: ${messageOf(error)}`)
   }
   return data?.items && typeof data.items === 'object' ? data.items : {}
 }
@@ -39,8 +39,7 @@ function loadDrafts(path) {
  * @param path - ruta del JSON.
  * @param items - las fichas indexadas por SKU.
  */
-export
-function saveDrafts(path, items) {
+export function saveDrafts(path: string, items: Record<string, StoredDraft>): void {
   mkdirSync(dirname(path), { recursive: true })
   const contenido = { generatedAt: new Date().toISOString(), items }
   writeFileSync(path, `${JSON.stringify(contenido, null, 2)}\n`, 'utf8')

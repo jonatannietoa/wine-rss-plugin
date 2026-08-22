@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { parse } from 'csv-parse/sync'
-import { REQUIRED_COLUMNS, resolveFromConfig } from '../../config.js'
+import { REQUIRED_COLUMNS, resolveFromConfig } from '../../config.ts'
 
 /** Campos del modelo que se rellenan si la configuración los declara. */
 const OPTIONAL_COLUMNS = [
@@ -74,8 +74,7 @@ export function searchedIn(config) {
  * @param config - la configuración cargada.
  * @returns los nombres declarados que faltan.
  */
-export
-function missingColumns(header, config) {
+export function missingColumns(header, config) {
   return REQUIRED_COLUMNS
     .map((key) => config.columns[key])
     .filter((columna) => !header.includes(columna))

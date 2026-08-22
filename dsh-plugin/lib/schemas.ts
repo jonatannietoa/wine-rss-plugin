@@ -9,12 +9,10 @@
  */
 
 /** Un campo del modelo que el fichero puede no traer. */
-export
-const nullable = (type) => ({ oneOf: [{ type }, { type: 'null' }] })
+export const nullable = (type: string) => ({ oneOf: [{ type }, { type: 'null' }] })
 
 /** Recuento con nombre, para los histogramas del resumen. */
-export
-const tally = (key) => ({
+export const tally = (key: string) => ({
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -24,8 +22,7 @@ const tally = (key) => ({
 })
 
 /** El producto del modelo interno, tal como sale de la normalización. */
-export
-const PRODUCT_SCHEMA = {
+export const PRODUCT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -67,8 +64,7 @@ const PRODUCT_SCHEMA = {
 }
 
 /** Una ficha SEO ya generada, tal como se guarda y se publica. */
-export
-const DRAFT_SCHEMA = {
+export const DRAFT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {

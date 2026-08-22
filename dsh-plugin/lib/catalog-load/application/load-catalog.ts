@@ -8,9 +8,17 @@
  * @module dsh-plugin-catalog-agent/catalog-load/application/load-catalog
  */
 
-import { normalizeRow } from '../../domain/product.js'
-import { readRows } from '../infra/csv-source.js'
-import { saveCatalog } from '../infra/catalog-store.js'
+import { normalizeRow } from '../../domain/product.ts'
+import { readRows } from '../infra/csv-source.ts'
+import { saveCatalog } from '../infra/catalog-store.ts'
+import type { CatalogConfig } from '../../config.ts'
+
+/** Lo que se le puede pedir a la carga. */
+export interface LoadArgs {
+  readonly path?: string
+  readonly modifiedSince?: string
+  readonly sku?: string
+}
 
 /**
  * Recorre el fichero entero y reparte las filas entre productos y rechazos.
@@ -20,9 +28,9 @@ import { saveCatalog } from '../infra/catalog-store.js'
  * @returns `{ catalog, summary }`: el catálogo completo y el resumen acotado que
  *   se le puede enseñar al modelo.
  */
-export function buildCatalog(config, opciones = {}) {
-  const { path, rows, absentColumns } = readRows(config, opciones.path)
-  const from = opciones.modifiedSince ? String(opciones.modifiedSince).slice(0, 10) : null
+export function buildCatalog(config: CatalogConfig, options: { path?: string, modifiedSince?: string } = {}) {
+  const { path, rows, absentColumns } = readRows(config, options.path)
+  const from = options.modifiedSince ? String(options.modifiedSince).slice(0, 10) : null
 
   const items = []
   const rejected = []
@@ -80,7 +88,7 @@ export function buildCatalog(config, opciones = {}) {
  * @param args - lo que pidió quien llama: `path`, `modifiedSince`, `sku`.
  * @returns el resumen, el producto pedido si lo hubo, y dónde ha quedado.
  */
-export function loadCatalog(domainConfig, args = {}) {
+export function loadCatalog(domainConfig: CatalogConfig, args: LoadArgs = {}) {
   if (args.modifiedSince && !/^\d{4}-\d{2}-\d{2}$/.test(args.modifiedSince.trim())) {
     throw new Error(`modifiedSince debe ser una fecha aaaa-mm-dd (recibido "${args.modifiedSince}")`)
   }

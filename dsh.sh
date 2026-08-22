@@ -68,6 +68,22 @@ paso "Dependencias"
 (cd "$PLUGIN" && npm install --silent)
 ok "$(node -p "Object.keys(require('$PLUGIN/package.json').dependencies).length") dependencias al día"
 
+# ── 2b. tipos ───────────────────────────────────────────────────────────────
+# AVISA, no bloquea: la migración a TypeScript está a medias y hay errores de
+# tipo pendientes. Cuando `npm run typecheck` salga limpio, esto pasa a `morir`
+# como los tests, y entonces sí es una puerta.
+paso "Tipos"
+if [ "${SKIP_TYPECHECK:-0}" = 1 ]; then
+  aviso "saltados (SKIP_TYPECHECK=1)"
+else
+  PENDIENTES="$( (cd "$PLUGIN" && npx --yes tsc --noEmit 2>&1 | grep -cE 'error TS') || true )"
+  if [ "${PENDIENTES:-0}" -eq 0 ]; then
+    ok "tsc --noEmit sin errores"
+  else
+    aviso "$PENDIENTES errores de tipo pendientes (migración a TS a medias; no bloquea)"
+  fi
+fi
+
 # ── 3. tests ────────────────────────────────────────────────────────────────
 paso "Tests"
 if [ "${SKIP_TESTS:-0}" = 1 ]; then
@@ -123,7 +139,10 @@ if (!seco.prompt) throw new Error('dryRun tenía que devolver el prompt y no lo 
 console.log(`   catalog_describe dryRun: prompt de ${seco.prompt.system.length}+${seco.prompt.user.length} caracteres`)
 console.log(`   pendientes de ficha SEO: ${seco.pending}`)
 NODE
-ENTRADA="$ENLACE/lib/index.js" CONFIG="$REPO/catalog.config.yml" node "$SMOKE" || {
+# La entrada sale del `main` del paquete, no cableada: cuando cambió de
+# `lib/index.js` a `lib/index.ts` esto se quedó obsoleto y rompió el despliegue.
+ENTRADA="$ENLACE/$(node -p "require('$ENLACE/package.json').main")"
+ENTRADA="$ENTRADA" CONFIG="$REPO/catalog.config.yml" node "$SMOKE" || {
   rm -f "$SMOKE"; morir "el plugin no arranca desde el perfil de dsh"
 }
 rm -f "$SMOKE"

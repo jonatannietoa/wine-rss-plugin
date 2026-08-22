@@ -10,7 +10,25 @@
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
-import { SEO_FIELDS } from '../domain/seo-draft.js'
+import { SEO_FIELDS, type SeoDraft } from '../domain/seo-draft.ts'
+import { codeOf, messageOf } from '../../errors.ts'
+
+/** Lo que hace falta para pedirle una ficha al modelo. */
+export interface DraftRequest {
+  readonly model: { readonly provider: string, readonly model: string }
+  readonly system: string
+  readonly user: string
+  readonly reasoningEffort: string
+  readonly maxTokens: number
+  readonly temperature?: number
+  readonly plugin: string
+  readonly signal?: AbortSignal
+}
+
+/** El servicio `llm` del host, en lo que este adaptador usa de él. */
+export interface LlmCapable {
+  readonly llm: { stream(options: Record<string, unknown>): AsyncIterable<{ type: string, text?: string }> }
+}
 
 /** Cuánto de la respuesta cruda se guarda para poder diagnosticar un fallo. */
 const MAX_CRUDA = 500
@@ -22,23 +40,24 @@ const MAX_CRUDA = 500
  * @param peticion - `{ modelo, system, user, reasoningEffort, maxTokens, temperature, plugin, signal }`.
  * @returns `{ texto, razonamiento, milisegundos }`.
  */
-export async function requestDraft(ctx, peticion) {
+export async function requestDraft(ctx: LlmCapable, request: DraftRequest):
+Promise<{ text: string, reasoning: number, durations: number, raw: string }> {
   const start = Date.now()
   let text = ''
   let reasoning = 0
   try {
     for await (const chunk of ctx.llm.stream({
-      provider: peticion.model.provider,
-      model: peticion.model.model,
-      system: peticion.system,
+      provider: request.model.provider,
+      model: request.model.model,
+      system: request.system,
       messages: [createUserMessage({
-        content: [{ type: 'text', text: peticion.user }],
-        source: { kind: 'plugin', plugin: peticion.plugin, contextForm: 'transient' },
+        content: [{ type: 'text', text: request.user }],
+        source: { kind: 'plugin', plugin: request.plugin, contextForm: 'transient' },
       })],
-      reasoningEffort: peticion.reasoningEffort,
-      maxTokens: peticion.maxTokens,
-      ...(peticion.temperature === undefined ? {} : { temperature: peticion.temperature }),
-      signal: peticion.signal,
+      reasoningEffort: request.reasoningEffort,
+      maxTokens: request.maxTokens,
+      ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      signal: request.signal,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
       else if (chunk.type === 'reasoning-delta') reasoning += chunk.text.length
@@ -46,12 +65,12 @@ export async function requestDraft(ctx, peticion) {
   } catch (error) {
     // Qué esfuerzos acepta el adaptador depende de su versión, y el error crudo
     // no dice de dónde sale el valor ni cuáles valen.
-    if (error?.code === 'UNSUPPORTED_REASONING_EFFORT' || /reasoning effort/i.test(error?.message ?? '')) {
+    if (codeOf(error) === 'UNSUPPORTED_REASONING_EFFORT' || /reasoning effort/i.test(messageOf(error))) {
       throw new Error(
-        `el proveedor no acepta el esfuerzo de razonamiento "${peticion.reasoningEffort}". `
+        `el proveedor no acepta el esfuerzo de razonamiento "${request.reasoningEffort}". `
         + 'Sale de `description.reasoningEffort` en catalog.config.yml (o del parámetro '
         + '`reasoningEffort` de esta llamada). DeepSeek acepta off, high y max en todas sus '
-        + `versiones, y low solo desde rc.8. Mensaje del proveedor: ${error.message}`,
+        + `versiones, y low solo desde rc.8. Mensaje del proveedor: ${messageOf(error)}`,
       )
     }
     throw error
@@ -74,7 +93,7 @@ export async function requestDraft(ctx, peticion) {
  * @param raw - el texto que devolvió el modelo.
  * @returns el borrador con los seis campos, ya recortados.
  */
-export function parseBlocks(raw) {
+export function parseBlocks(raw: unknown): SeoDraft {
   const text = String(raw ?? '').replace(/^\s*```[a-z]*\s*$|^\s*```\s*$/gim, '')
   const borrador = {}
   for (const campo of SEO_FIELDS) borrador[campo] = ''

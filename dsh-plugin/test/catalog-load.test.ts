@@ -3,10 +3,10 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { loadConfig } from '../lib/config.js'
-import { listSources, resolveSourcePath } from '../lib/catalog-load/infra/csv-source.js'
-import { buildCatalog } from '../lib/catalog-load/application/load-catalog.js'
-import { CONFIG, FIXTURE, configTemporal, registrar, temporal } from './helpers.js'
+import { loadConfig } from '../lib/config.ts'
+import { listSources, resolveSourcePath } from '../lib/catalog-load/infra/csv-source.ts'
+import { buildCatalog } from '../lib/catalog-load/application/load-catalog.ts'
+import { CONFIG, FIXTURE, configTemporal, registrar, temporal } from './helpers.ts'
 
 const config = loadConfig(CONFIG)
 const { catalog, summary } = buildCatalog(config, { path: FIXTURE })
