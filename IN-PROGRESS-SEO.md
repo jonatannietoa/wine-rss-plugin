@@ -186,7 +186,19 @@ catalog_describe(limit: 4, regenerate: "always", reasoningEffort: "high")
 Los dos parámetros son necesarios: sin `regenerate: "always"` no rehace nada porque ya tienen ficha,
 y sin `reasoningEffort` usa el defecto. Faltó eso en los dos intentos anteriores de A/B.
 
-## 8. Después del A/B
+## 8. La arquitectura (hecha el 22 de agosto)
+
+`lib/` está partido en un hexágono por tool, siguiendo
+`catalog-agent-refactor-hexagonal.md`. `index.js` pasó de 1183 a 567 líneas y ya no tiene `fs`,
+`ctx.llm` ni ninguna regla de negocio: solo parámetros, esquemas, presentación y la llamada a la capa
+de aplicación. El árbol y las reglas del reparto están en el README, sección «Un hexágono por tool».
+
+Lo que hay que respetar al añadir las etapas 4 y 5: cada una es su propio hexágono, con su
+`infra/` para su dependencia externa (proveedor de imágenes, Shopify) y su `application/` para su
+política de fallo. `domain/product.js` es el único dominio compartido; lo que solo use una tool se
+queda dentro de ella.
+
+## 9. Después del A/B
 
 Por orden de valor:
 

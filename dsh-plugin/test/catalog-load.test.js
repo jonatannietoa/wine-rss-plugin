@@ -3,7 +3,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildCatalog, listSources, loadConfig, resolveSourcePath } from '../lib/catalog.js'
+import { loadConfig } from '../lib/config.js'
+import { listSources, resolveSourcePath } from '../lib/catalog-load/infra/csv-source.js'
+import { buildCatalog } from '../lib/catalog-load/application/load-catalog.js'
 import { CONFIG, FIXTURE, configTemporal, registrar, temporal } from './helpers.js'
 
 const config = loadConfig(CONFIG)

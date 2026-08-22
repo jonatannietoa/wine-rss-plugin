@@ -3,6 +3,8 @@
 Versión de la aplicación: `dsh-plugin/package.json`. Reglas de subida:
 `.agent/rules/version-bump.md`.
 
+- 0.7.3 — Arquitectura hexagonal por tool: un hexágono por cada una, `domain/product.js`
+  como único dominio compartido, y `index.js` reducido a cableado (1183 → 567 líneas).
 - 0.7.2 — `IN-PROGRESS-SEO.md`: estado de la etapa 3, el A/B abierto y las trampas encontradas.
 - 0.7.1 — `reasoningEffort` por defecto a `off`: `high` cuesta 57,9 s por llamada de media
   frente a los 26,9 de `low`, y `off` es la medida que falta para cerrar la comparación.

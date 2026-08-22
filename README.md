@@ -670,9 +670,7 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 ├── entradas/                 # bandeja de entrada: los catálogos que se quieran cargar (en .gitignore)
 ├── dsh-plugin/               # el plugin nativo de dsh
 │   ├── package.json          # nombre, versión y dependencias del harness
-│   ├── lib/index.js          # las herramientas registradas en el registro `tools`
-│   ├── lib/catalog.js        # etapas 1 y 2: leer el fichero y normalizar cada fila
-│   ├── lib/seo.js            # etapa 3: el prompt, el parser de bloques y la validación
+│   ├── lib/                   # un hexágono por tool (ver abajo)
 │   └── test/                 # 80 tests con `node --test`, sin claves ni red
 ├── agent-presets/
 │   └── catalog-agent/        # preset de agente versionado (preset.yml + agent.cordis.yml)
@@ -682,10 +680,44 @@ El plugin nativo de dsh no lee nada de esto: usa el modelo de la sesión del har
 └── .artifacts/               # salida del pipeline (en .gitignore: contiene datos reales)
 ```
 
-El reparto de `dsh-plugin/lib/` es a propósito: `catalog.js` y `seo.js` son módulos puros —no
-llaman a ningún modelo, no tocan la red y no escriben nada— y por eso se pueden testear con un
-fixture sin levantar dsh. `seo.js` construye el prompt y valida el borrador; quien habla con el
-modelo es `index.js`, que es también lo único que conoce el harness.
+### Un hexágono por tool
+
+```
+dsh-plugin/lib/
+├── index.js                       SOLO cableado: defineTool ×5, cero negocio
+├── config.js                      cargar catalog.config.yml y resolver sus rutas
+├── schemas.js                     los esquemas de salida que ven las tools
+├── domain/
+│   └── product.js                 el ÚNICO dominio compartido entre tools
+├── catalog-load/
+│   ├── infra/csv-source.js        entra: el CSV y las bandejas de entrada
+│   ├── infra/catalog-store.js     sale: catalog.json
+│   └── application/               orquesta: filas → dominio → JSON
+├── catalog-describe/
+│   ├── domain/seo-draft.js        su dominio propio: qué es una ficha válida
+│   ├── infra/llm-adapter.js       entra/sale: el modelo y el parseo de bloques
+│   ├── infra/catalog-reader.js    entra: el catálogo de la etapa 2
+│   ├── infra/seo-store.js         sale: catalog-seo.json
+│   └── application/               orquesta: prompt → modelo → valida → reintenta
+└── catalog-review/
+    └── application/               leer y aprobar fichas
+```
+
+Las reglas del reparto, que son lo que hay que respetar al añadir las etapas 4 y 5:
+
+- **`domain/product.js` es el único dominio compartido.** Lo produce `catalog-load` y lo consumen
+  las demás. `SeoDraft` no se fuerza ahí: solo lo usa una tool, así que vive en su hexágono.
+- **El dominio es puro**: no lee ficheros, no llama a nadie, no sabe de dónde vienen sus datos. Por
+  eso se testea con un fixture sin levantar dsh.
+- **La aplicación orquesta y decide políticas** (reintentos, `regenerate`, el reparto del lote), pero
+  no habla con el exterior: eso es de `infra/`.
+- **`index.js` no tiene lógica de negocio.** Si aparece una regla de la tienda ahí, está en el sitio
+  equivocado. Pasó de 1183 líneas a 567 con el refactor, y lo que queda son parámetros, esquemas y
+  cómo se presenta el resultado.
+
+El beneficio concreto: el bucle de reintentos y validación de la etapa 3 se prueba con un
+`llm-adapter` falso, sin arrancar dsh y sin llamar a ningún modelo real. Es lo que hacen los tests de
+`test/catalog-describe.test.js`.
 
 ## Tests
 

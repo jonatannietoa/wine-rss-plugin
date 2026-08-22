@@ -13,8 +13,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { buildCatalog, loadConfig } from '../lib/catalog.js'
-import { SEO_FIELDS, buildPrompt, keywords, parseBlocks, slugify, stripTags, validateDraft } from '../lib/seo.js'
+import { loadConfig } from '../lib/config.js'
+import { buildCatalog } from '../lib/catalog-load/application/load-catalog.js'
+import { SEO_FIELDS, keywords, slugify, stripTags, validateDraft } from '../lib/catalog-describe/domain/seo-draft.js'
+import { parseBlocks } from '../lib/catalog-describe/infra/llm-adapter.js'
+import { buildPrompt } from '../lib/catalog-describe/application/describe-catalog.js'
 import { CONFIG, FIXTURE, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.js'
 
 const config = loadConfig(CONFIG)

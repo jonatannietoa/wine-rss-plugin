@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { dump } from 'js-yaml'
-import { loadConfig } from '../lib/catalog.js'
+import { loadConfig } from '../lib/config.js'
 import { Config, apply } from '../lib/index.js'
 
 export const RAIZ = resolve(import.meta.dirname, '..', '..')
