@@ -84,6 +84,17 @@ Es el reparto menos obvio, y sirve de plantilla para las etapas 4 y 5:
 | el bucle de reintentos | aplicación | Es una política: cuántas veces, con qué correcciones |
 | `ctx.llm.stream` | infraestructura | Es la dependencia externa |
 
+## Las salidas se validan contra su propio esquema
+
+Llamar a `execute` en un test **no** valida el resultado: eso lo hace el runtime al despachar, y el
+`ctx` de mentira de los tests se lo salta. Por ahí se colaron unos `warnings` que `DRAFT_SCHEMA` no
+declaraba, y con `additionalProperties: false` el sandbox rechazó la respuesta entera en una sesión
+real: la tool no devolvió ni una descripción.
+
+Por eso `test/helpers.ts` trae `checkOutput`, que valida con `validateJsonSchemaValue` —el mismo
+validador que aplica el runtime— y se llama en los tests de las cinco tools. Al añadir un campo a
+una salida hay que declararlo en su esquema, y esto es lo que lo obliga.
+
 ## El beneficio, comprobado
 
 El bucle de reintentos y validación de la etapa 3 se ejercita con un `llm-adapter` falso, **sin

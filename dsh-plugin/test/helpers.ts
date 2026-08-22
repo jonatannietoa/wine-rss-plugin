@@ -8,6 +8,8 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import assert from 'node:assert/strict'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { dump } from 'js-yaml'
 import { loadConfig } from '../lib/config.ts'
 import { Config, apply } from '../lib/index.ts'
@@ -86,6 +88,25 @@ export function llmSimulado(respuestas) {
       },
     },
   }
+}
+
+/**
+ * Comprueba la salida de un tool contra su propio `output.schema`.
+ *
+ * Existe porque llamar a `execute` en un test NO valida el resultado: eso lo hace
+ * el runtime al despachar, y el `ctx` de mentira se lo salta. Así se colaron unos
+ * `warnings` que el esquema no declaraba, con `additionalProperties: false`, y el
+ * sandbox rechazó la respuesta entera en una sesión real.
+ *
+ * Usa el validador de dsh-tools, el mismo que aplica el runtime.
+ * @param tool - la herramienta cuyo esquema manda.
+ * @param value - lo que devolvió su `execute`.
+ */
+export function checkOutput(tool: { output: { schema: unknown } }, value: unknown): void {
+  // `output.schema` de una ToolDefinition ya viene compilado a JSON Schema, así
+  // que se valida directo y no hay que pasarlo por `valueSchemaSpecToJsonSchema`.
+  const violations = validateJsonSchemaValue(tool.output.schema as never, value)
+  assert.deepEqual(violations, [], `la salida no cumple su propio esquema:\n  ${violations.join('\n  ')}`)
 }
 
 /** El `exec` que recibe un tool, con el modelo de la sesión y su señal. */

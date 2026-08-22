@@ -6,7 +6,7 @@ import test from 'node:test'
 import { loadConfig } from '../lib/config.ts'
 import { listSources, resolveSourcePath } from '../lib/catalog-load/infra/csv-source.ts'
 import { buildCatalog } from '../lib/catalog-load/application/load-catalog.ts'
-import { CONFIG, FIXTURE, configTemporal, registrar, temporal } from './helpers.ts'
+import { CONFIG, FIXTURE, checkOutput, configTemporal, registrar, temporal } from './helpers.ts'
 
 const config = loadConfig(CONFIG)
 const { catalog, summary } = buildCatalog(config, { path: FIXTURE })
@@ -252,6 +252,7 @@ test('cuando no encuentra un fichero dice dónde ha buscado', () => {
 test('catalog_sources incluye el catálogo habitual, no solo la bandeja', async () => {
   const { catalog_sources: tool } = registrar(configTemporal((c) => { c.source.dirs = [temporal()] }))
   const result = await tool.execute({})
+  checkOutput(tool, result)
   assert.equal(result.defaultSource, FIXTURE)
   assert.deepEqual(result.files, [])
 })
@@ -267,6 +268,9 @@ test('el plugin registra las herramientas del pipeline', () => {
 test('el tool escribe el catálogo completo y devuelve solo el resumen', async () => {
   const { catalog_load: tool } = registrar(configTemporal())
   const result = await tool.execute({})
+  // Las cinco salidas se validan contra su propio esquema: es lo que hace el
+  // sandbox, y llamar a execute en un test no lo hace por su cuenta.
+  checkOutput(tool, result)
 
   assert.equal(result.ok, 18)
   assert.equal(result.producto, null)
@@ -286,6 +290,7 @@ test('el tool escribe el catálogo completo y devuelve solo el resumen', async (
 test('el tool devuelve un producto concreto por sku', async () => {
   const { catalog_load: tool } = registrar(configTemporal())
   const result = await tool.execute({ sku: '000109' })
+  checkOutput(tool, result)
   assert.equal(result.producto.title, 'Ejemplo Magnum')
   assert.equal(result.producto.volumeMl, 1500)
 })

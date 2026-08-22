@@ -1,4 +1,4 @@
-name: Agente de catálogo (1.1.0)
+name: Agente de catálogo (1.1.1)
 description: >-
   Agente de catálogo: carga los productos desde el fichero que exporta el ERP de la
   tienda, los convierte en fichas normalizadas (nombre, formato, tipo, tags, precio,

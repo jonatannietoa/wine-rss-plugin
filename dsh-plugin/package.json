@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-catalog-agent",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Plugin de dsh: carga de catálogo de productos desde fichero, descripción e imagen con IA, y publicación en Shopify con precios y stock.",
   "type": "module",
   "main": "lib/index.ts",

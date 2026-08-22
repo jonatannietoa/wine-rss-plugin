@@ -18,7 +18,7 @@ import { buildCatalog } from '../lib/catalog-load/application/load-catalog.ts'
 import { SEO_FIELDS, keywords, slugify, stripTags, validateDraft, type SeoDraft } from '../lib/catalog-describe/domain/seo-draft.ts'
 import { parseBlocks } from '../lib/catalog-describe/infra/llm-adapter.ts'
 import { buildPrompt } from '../lib/catalog-describe/application/describe-catalog.ts'
-import { CONFIG, FIXTURE, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.ts'
+import { CONFIG, FIXTURE, checkOutput, conCatalogoCargado, configTemporal, ejecucion, llmSimulado, registrar } from './helpers.ts'
 
 const config = loadConfig(CONFIG)
 const { catalog } = buildCatalog(config, { path: FIXTURE })
@@ -629,6 +629,8 @@ test('la ficha guarda los avisos blandos, para quien la revise', async () => {
     c.description.probeFirst = 'never'
   })
   const result = await tools.catalog_describe.execute({ sku: '000101' }, ejecucion())
+  // La salida tiene que cumplir su propio esquema: es lo que valida el sandbox.
+  checkOutput(tools.catalog_describe, result)
   assert.equal(result.written, 1)
   assert.equal(result.calls, 1, 'una sola llamada, no tres')
   assert.deepEqual(result.sample[0].warnings.map((x) => x.code), ['bulletLargo'])
@@ -676,6 +678,7 @@ test('catalog_review es lo que convierte una ficha en publicable', async () => {
   await assert.rejects(() => revisar.execute({}), /di qué revisar/)
 
   const result = await revisar.execute({ sku: '000101' })
+  checkOutput(revisar, result)
   assert.equal(result.newlyReviewed, 1)
   assert.equal(result.unreviewed, 0)
 

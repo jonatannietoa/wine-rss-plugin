@@ -3,6 +3,9 @@
 Versión de la aplicación: `dsh-plugin/package.json`. Reglas de subida:
 `.agent/rules/version-bump.md`.
 
+- 1.1.1 — Arreglado: `catalog_describe` devolvía `sample[].warnings` sin declararlo en su
+  esquema y el sandbox rechazaba la respuesta entera. Los tests validan ahora las cinco
+  salidas contra su propio esquema, que es lo que no hacían.
 - 1.1.0 — Migración a TypeScript (sin paso de compilación: Node hace type stripping) y
   reglas blandas: con el razonamiento apagado el modelo se pasa de los topes por 1-5
   caracteres, y ahora eso avisa en vez de tirar la ficha. `callsPerProduct` no esconde el

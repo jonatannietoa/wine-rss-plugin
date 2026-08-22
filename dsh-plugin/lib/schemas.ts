@@ -79,5 +79,18 @@ export const DRAFT_SCHEMA = {
     generatedAt: { type: 'string', required: true },
     model: { type: 'string', required: true },
     attempts: { type: 'integer', required: true, description: 'Intentos que necesitó para pasar la validación.' },
+    warnings: {
+      type: 'array',
+      required: true,
+      description: 'Límites blandos que se pasó. La ficha vale, pero conviene mirarla antes de aprobarla.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          code: { type: 'string', required: true },
+          message: { type: 'string', required: true },
+        },
+      },
+    },
   },
 }
